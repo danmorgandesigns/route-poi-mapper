@@ -257,10 +257,12 @@
 				DEVELOPMENT_TEAM = Q58ANPEM9F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Route-and-POI-Mapper-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Gretel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera to capture your membership QR code for verification at park entry.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app needs location access to show your current position on the map.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "his app needs background location to continue recording your route when the app is not active or the screen is locked.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app needs your location to record hiking routes and add accurate points of interest.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -294,10 +296,12 @@
 				DEVELOPMENT_TEAM = Q58ANPEM9F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Route-and-POI-Mapper-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Gretel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera to capture your membership QR code for verification at park entry.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app needs location access to show your current position on the map.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "his app needs background location to continue recording your route when the app is not active or the screen is locked.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app needs your location to record hiking routes and add accurate points of interest.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -17,7 +17,7 @@ struct MapView: View {
     
     @State private var region = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194), // San Francisco default
-        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        span: MKCoordinateSpan(latitudeDelta: 0.0015, longitudeDelta: 0.0015)
     )
     
     @State private var showingPOISheet = false
@@ -163,7 +163,7 @@ struct MapView: View {
             )
         }
         .sheet(isPresented: $showingRouteModal) {
-            RouteConfirmationModal(locationManager: locationManager, showingRouteNameModal: $showingRouteNameModal)
+            RouteConfirmationModal(locationManager: locationManager, isRouteNameSheetPresented: $showingRouteNameModal)
         }
         .sheet(isPresented: $showingRouteNameModal) {
             RouteNamingModal { name in
@@ -583,7 +583,12 @@ struct QuickPOIModal: View {
 struct RouteConfirmationModal: View {
     @ObservedObject var locationManager: LocationManager
     @Environment(\.dismiss) private var dismiss
-    @Binding var showingRouteNameModal: Bool
+    @Binding var isRouteNameSheetPresented: Bool
+
+    init(locationManager: LocationManager, isRouteNameSheetPresented: Binding<Bool>) {
+        self.locationManager = locationManager
+        self._isRouteNameSheetPresented = isRouteNameSheetPresented
+    }
 
     private var titleText: String { locationManager.isTracking ? "Route Tracking" : "Start Route Tracking" }
     private var headlineText: String { locationManager.isTracking ? "Route Tracking Active" : "Start Route Tracking" }
@@ -619,7 +624,7 @@ struct RouteConfirmationModal: View {
                     if locationManager.isTracking {
                         Button(action: {
                             locationManager.stopRouteTracking()
-                            showingRouteNameModal = true
+                            isRouteNameSheetPresented = true
                             dismiss()
                         }) {
                             Text("Stop Route Tracking")
@@ -713,4 +718,3 @@ struct RouteNamingModal: View {
         dataManager: DataManager()
     )
 }
-

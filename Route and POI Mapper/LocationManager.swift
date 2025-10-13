@@ -12,6 +12,7 @@ import Combine
 @MainActor
 class LocationManager: NSObject, ObservableObject {
     private let locationManager = CLLocationManager()
+    private var hasConfiguredForBackground = false
     
     @Published var location: CLLocation?
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
@@ -30,8 +31,11 @@ class LocationManager: NSObject, ObservableObject {
     override init() {
         super.init()
         locationManager.delegate = self
+        // Configure for high accuracy and background coexistence
+        locationManager.activityType = .fitness
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        locationManager.distanceFilter = 2 // More precise for hiking trails
+        locationManager.distanceFilter = 2 // prefer fine-grained points for accurate routes
+        locationManager.pausesLocationUpdatesAutomatically = false
         authorizationStatus = locationManager.authorizationStatus
         
         // Request permission on launch if not determined; start updates if already authorized
@@ -61,6 +65,21 @@ class LocationManager: NSObject, ObservableObject {
         isPaused = false
         routeStartTime = Date()
         isTracking = true
+        
+        // Enable background updates if capability is present
+        if !hasConfiguredForBackground {
+            locationManager.allowsBackgroundLocationUpdates = true
+            // Keep system from auto-pausing during short, high-accuracy sessions
+            locationManager.pausesLocationUpdatesAutomatically = false
+            hasConfiguredForBackground = true
+        }
+        
+        // Prefer Always authorization for reliable background tracking
+        if authorizationStatus == .authorizedWhenInUse {
+            // On iOS, you must explicitly request Always after When-In-Use, ideally after explaining to the user
+            locationManager.requestAlwaysAuthorization()
+        }
+        
         locationManager.startUpdatingLocation()
     }
     
@@ -76,6 +95,12 @@ class LocationManager: NSObject, ObservableObject {
     func resumeRouteTracking() {
         guard isTracking, isPaused else { return }
         isPaused = false
+        
+        // Restore high-accuracy settings for active tracking
+        locationManager.activityType = .fitness
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        locationManager.distanceFilter = 2
+        locationManager.pausesLocationUpdatesAutomatically = false
     }
     
     func stopRouteTracking() {
@@ -85,6 +110,12 @@ class LocationManager: NSObject, ObservableObject {
             currentSegments.append(currentSegment)
             currentSegment.removeAll()
         }
+        
+        // When not actively tracking, relax accuracy a bit to reduce impact
+        locationManager.activityType = .other
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 10
+        
         // Keep updating location so the blue dot and recentering remain functional
     }
     
@@ -179,6 +210,8 @@ extension LocationManager: CLLocationManagerDelegate {
                 break
             case .authorizedWhenInUse, .authorizedAlways:
                 errorMessage = nil
+                manager.allowsBackgroundLocationUpdates = true
+                manager.pausesLocationUpdatesAutomatically = false
                 manager.startUpdatingLocation()
             @unknown default:
                 break
