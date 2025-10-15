@@ -8,10 +8,16 @@
 import SwiftUI
 
 @main
-struct Route_and_POI_MapperApp: App {
+struct Route_and_POI_MapperApp: App {    
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootSwitcher()
         }
+    }
+}
+
+struct RootSwitcher: View {    
+    var body: some View {
+        ContentView()
     }
 }

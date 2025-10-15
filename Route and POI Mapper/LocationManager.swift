@@ -28,6 +28,18 @@ class LocationManager: NSObject, ObservableObject {
     // Error handling
     @Published var errorMessage: String?
     
+    private var routePrecisionMeters: Double {
+        let value = UserDefaults.standard.double(forKey: "routePrecisionMeters")
+        // If key is not set, double(forKey:) returns 0.0; provide default 5.0
+        return value > 0 ? value : 5.0
+    }
+    
+    private var updateFrequencyMeters: Double {
+        let value = UserDefaults.standard.double(forKey: "updateFrequencyMeters")
+        // If key is not set, fall back to 10.0
+        return value > 0 ? value : 10.0
+    }
+    
     override init() {
         super.init()
         locationManager.delegate = self
@@ -80,6 +92,12 @@ class LocationManager: NSObject, ObservableObject {
             locationManager.requestAlwaysAuthorization()
         }
         
+        // Apply user-configured update frequency while tracking
+        locationManager.distanceFilter = updateFrequencyMeters
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        locationManager.activityType = .fitness
+        locationManager.pausesLocationUpdatesAutomatically = false
+        
         locationManager.startUpdatingLocation()
     }
     
@@ -96,10 +114,10 @@ class LocationManager: NSObject, ObservableObject {
         guard isTracking, isPaused else { return }
         isPaused = false
         
-        // Restore high-accuracy settings for active tracking
+        // Restore high-accuracy settings for active tracking using user-configured frequency
         locationManager.activityType = .fitness
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        locationManager.distanceFilter = 2
+        locationManager.distanceFilter = updateFrequencyMeters
         locationManager.pausesLocationUpdatesAutomatically = false
     }
     
@@ -111,7 +129,7 @@ class LocationManager: NSObject, ObservableObject {
             currentSegment.removeAll()
         }
         
-        // When not actively tracking, relax accuracy a bit to reduce impact
+        // When not actively tracking, relax accuracy to reduce impact (fixed idle distance filter)
         locationManager.activityType = .other
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = 10
@@ -177,12 +195,12 @@ extension LocationManager: CLLocationManagerDelegate {
                     let lon = location.coordinate.longitude
                     let lat = location.coordinate.latitude
                     let elev = location.altitude
-                    // Simple distance filter: only append if moved > 3 meters from last point in currentSegment
+                    // Simple distance filter: only append if moved > routePrecisionMeters from last point in currentSegment
                     if let last = currentSegment.last {
                         let dLon = lon - last[0]
                         let dLat = lat - last[1]
                         let approxMeters = sqrt(dLon*dLon + dLat*dLat) * 111_000.0
-                        if approxMeters > 3.0 {
+                        if approxMeters > routePrecisionMeters {
                             currentSegment.append([lon, lat, elev])
                         }
                     } else {

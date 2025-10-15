@@ -257,9 +257,6 @@ struct POIsListView: View {
         }
         .alert(saveResultMessage ?? "", isPresented: $showSaveResultAlert) {
             Button("OK", role: .cancel) {}
-            if lastSavedPOIURL != nil {
-                Button("Reveal") { showRevealSheet = true }
-            }
         }
         .sheet(isPresented: $showRevealSheet) {
             if let url = lastSavedPOIURL {
@@ -267,12 +264,6 @@ struct POIsListView: View {
             } else {
                 Text("No file to reveal.")
                     .padding()
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Reveal") { showRevealSheet = true }
-                    .disabled(lastSavedPOIURL == nil)
             }
         }
     }
@@ -494,43 +485,65 @@ struct RouteDetailsModal: View {
 struct RouteExportShareView: View {
     let route: TrailRoute
 
-    private func sanitizedFilename(from name: String, defaultExtension ext: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let replaced = trimmed.replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-            .replacingOccurrences(of: "\\", with: "-")
-            .replacingOccurrences(of: "?", with: "-")
-            .replacingOccurrences(of: "*", with: "-")
-            .replacingOccurrences(of: "\"", with: "'")
-            .replacingOccurrences(of: "<", with: "(")
-            .replacingOccurrences(of: ">", with: ")")
-            .replacingOccurrences(of: "|", with: "-")
-        let collapsed = replaced.replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        let filename = collapsed.isEmpty ? "Export" : collapsed
-        if filename.lowercased().hasSuffix(".geojson") || filename.lowercased().hasSuffix(".json") {
-            return filename
-        } else {
-            return filename + "." + ext
+    @State private var exportURL: URL? = nil
+    @State private var exportError: String? = nil
+    
+    var body: some View {
+        Group {
+            if let url = exportURL {
+                ShareSheetItems(items: [ JSONShareItem(fileURL: url) ])
+            } else if let error = exportError {
+                Text(error)
+            } else {
+                // Minimal placeholder while preparing the export
+                ProgressView("Preparing export…")
+            }
+        }
+        .onAppear {
+            prepareRouteExportFile()
         }
     }
     
-    var body: some View {
+    private func prepareRouteExportFile() {
+        // Build segments and compute info string
         let segments: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
         let (miles, feet) = computeDistanceMilesAndElevationFeet(from: segments)
         let infoString = String(format: "Length: %.2f miles. Elevation %.0f feet.", miles, feet)
         let collection = route.exportGeoJSON(info: infoString)
-        if let data = try? JSONSerialization.data(withJSONObject: collection, options: .prettyPrinted) {
-            ShareSheetItems(items: [
-                JSONItemProviderShareItem(
-                    data: data,
-                    filename: sanitizedFilename(from: route.name, defaultExtension: "geojson")
-                )
-            ])
-        } else {
-            Text("Failed to prepare export.")
+
+        // Serialize to JSON data
+        guard let data = try? JSONSerialization.data(withJSONObject: collection, options: .prettyPrinted) else {
+            exportError = "Failed to prepare export."
+            return
+        }
+
+        // Determine filename using the GeoJSON "name" value if present; otherwise fall back to route.name
+        let geoName: String = {
+            if let features = collection["features"] as? [[String: Any]],
+               let first = features.first,
+               let properties = first["properties"] as? [String: Any],
+               let name = properties["name"] as? String,
+               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return name
+            }
+            return route.name
+        }()
+
+        // Build a sanitized filename with a timestamp and .geojson extension
+        let timestamp = DateFormatter.exportTimestamp.string(from: Date())
+        let base = sanitizedFilename(from: geoName)
+        let filename = "\(base)-\(timestamp).geojson"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+
+        do {
+            try data.write(to: tempURL, options: [.atomic])
+            exportURL = tempURL
+        } catch {
+            exportError = "Failed to write temporary file: \(error.localizedDescription)"
         }
     }
+
+    // Keep existing distance computation helper
     private func computeDistanceMilesAndElevationFeet(from segments: [[[Double]]]) -> (Double, Double) {
         var totalMeters: Double = 0
         var totalAscentMeters: Double = 0
@@ -552,6 +565,34 @@ struct RouteExportShareView: View {
         let feet = totalAscentMeters * 3.28084
         return (miles, feet)
     }
+
+    // Helper to sanitize a base filename (without extension)
+    private func sanitizedFilename(from name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replaced = trimmed
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "?", with: "-")
+            .replacingOccurrences(of: "*", with: "-")
+            .replacingOccurrences(of: "\"", with: "'")
+            .replacingOccurrences(of: "<", with: "(")
+            .replacingOccurrences(of: ">", with: ")")
+            .replacingOccurrences(of: "|", with: "-")
+        let collapsed = replaced
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return collapsed.isEmpty ? "Export" : collapsed
+    }
+}
+
+fileprivate extension DateFormatter {
+    static let exportTimestamp: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        df.locale = Locale(identifier: "en_US_POSIX")
+        return df
+    }()
 }
 
 #Preview {

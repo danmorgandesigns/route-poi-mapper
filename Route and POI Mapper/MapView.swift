@@ -15,6 +15,8 @@ struct MapView: View {
     @ObservedObject var locationManager: LocationManager
     @ObservedObject var dataManager: DataManager
     
+    @Environment(\.dismiss) private var dismiss
+    
     @State private var region = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194), // San Francisco default
         span: MKCoordinateSpan(latitudeDelta: 0.0015, longitudeDelta: 0.0015)
@@ -28,6 +30,8 @@ struct MapView: View {
     @State private var showingFolderModal = false
     @State private var showingRouteNameModal = false
     @State private var didCenterInitially = false
+    @State private var showingSettings = false
+    @State private var showingInfo: Bool = false
     
     private var routePolylines: [MKPolyline] {
         var lines: [MKPolyline] = []
@@ -55,7 +59,7 @@ struct MapView: View {
     var body: some View {
         NavigationView {
             ZStack {
-                UIKitMapView(region: $region, polylines: routePolylines, poiAnnotations: poiAnnotations)
+                UIKitMapView(region: $region, mapType: $mapType, polylines: routePolylines, poiAnnotations: poiAnnotations)
                     .ignoresSafeArea(.all)
                     .onReceive(locationManager.$location) { location in
                         if let location = location, !didCenterInitially {
@@ -84,25 +88,50 @@ struct MapView: View {
             .toolbarColorScheme(.dark, for: .bottomBar) // Force transparent bottom toolbar
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: {
-                        mapType = mapType == .satellite ? .standard : .satellite
-                    }) {
-                        Image(systemName: mapType == .satellite ? "globe" : "map")
+                    HStack(spacing: 16) {
+                        Button(action: {
+                            mapType = mapType == .satellite ? .standard : .satellite
+                        }) {
+                            Image(systemName: mapType == .satellite ? "globe" : "map")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .padding(.leading, 6)
+                        }
+                        
+                        Button(action: {
+                            if let location = locationManager.location {
+                                withAnimation {
+                                    region.center = location.coordinate
+                                }
+                            }
+                        }) {
+                            Image(systemName: "location")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .padding(.trailing, 6)
+                        }
                     }
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: {
-                        if let location = locationManager.location {
-                            withAnimation {
-                                region.center = location.coordinate
-                            }
+                    HStack(spacing: 16) {
+                        Button(action: { showingSettings = true }) {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .padding(.leading, 6)
                         }
-                    }) {
-                        Image(systemName: "location.fill")
-                            .foregroundColor(.blue)
+                        Button(action: {
+                            showingInfo = true
+                        }) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .padding(.trailing, 6)
+                        }
                     }
                 }
+
                 
                 // Bottom toolbar items 
                 ToolbarItem(placement: .bottomBar) {
@@ -235,6 +264,12 @@ struct MapView: View {
         .sheet(isPresented: $showingFolderModal) {
             SavedDataView(dataManager: dataManager)
         }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+        }
+        .sheet(isPresented: $showingInfo) {
+            InfoView()
+        }
     }
     
     private var poiAnnotations: [PointOfInterest] {
@@ -244,6 +279,7 @@ struct MapView: View {
 
 struct UIKitMapView: UIViewRepresentable {
     @Binding var region: MKCoordinateRegion
+    @Binding var mapType: MKMapType
     var polylines: [MKPolyline]
     var poiAnnotations: [PointOfInterest]
     
@@ -251,13 +287,14 @@ struct UIKitMapView: UIViewRepresentable {
         let map = MKMapView(frame: .zero)
         map.delegate = context.coordinator
         map.showsUserLocation = true
-        map.mapType = .satellite
+        map.mapType = mapType
         map.region = region
         return map
     }
     
     func updateUIView(_ uiView: MKMapView, context: Context) {
         uiView.setRegion(region, animated: false)
+        if uiView.mapType != mapType { uiView.mapType = mapType }
         // Update overlays
         uiView.removeOverlays(uiView.overlays)
         uiView.addOverlays(polylines)
@@ -718,3 +755,4 @@ struct RouteNamingModal: View {
         dataManager: DataManager()
     )
 }
+

@@ -77,9 +77,9 @@ struct CategoryCustomizationView: View {
             .navigationTitle("Customize Categories")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark")
                     }
                 }
             }
