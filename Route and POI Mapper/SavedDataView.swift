@@ -20,7 +20,9 @@ struct SavedDataView: View {
     @State private var shareURL: URL? = nil
     
     @State private var routeToShare: TrailRoute? = nil
-    @State private var selectedRouteForDetails: TrailRoute? = nil
+    @State private var routeBeingEdited: TrailRoute? = nil
+    @State private var editedRouteName: String = ""
+    @State private var editedRouteColorName: String = "blue"
     
     var body: some View {
         NavigationView {
@@ -38,8 +40,10 @@ struct SavedDataView: View {
                         onExportFile: { route in
                             routeToShare = route
                         },
-                        onShowDetails: { route in
-                            selectedRouteForDetails = route
+                        onTap: { route in
+                            editedRouteName = route.name
+                            editedRouteColorName = dataManagerColorName(for: route)
+                            routeBeingEdited = route
                         }
                     )
                 } else {
@@ -62,8 +66,10 @@ struct SavedDataView: View {
             .sheet(item: $routeToShare) { route in
                 RouteExportShareView(route: route)
             }
-            .sheet(item: $selectedRouteForDetails) { route in
-                RouteDetailsModal(route: route)
+            .sheet(item: $routeBeingEdited) { route in
+                RouteEditModal(route: route, name: $editedRouteName, colorName: $editedRouteColorName) { newName, newColorName in
+                    updateRoute(route, newName: newName, newColorName: newColorName)
+                }
             }
         }
     }
@@ -104,7 +110,7 @@ struct SavedDataView: View {
 struct RoutesListView: View {
     @ObservedObject var dataManager: DataManager
     let onExportFile: (TrailRoute) -> Void
-    let onShowDetails: (TrailRoute) -> Void
+    let onTap: (TrailRoute) -> Void
     
     var body: some View {
         List {
@@ -120,8 +126,8 @@ struct RoutesListView: View {
                         onExportFile: { r in
                             onExportFile(r)
                         },
-                        onShowDetails: { r in
-                            onShowDetails(r)
+                        onTap: { r in
+                            onTap(r)
                         }
                     )
                 }
@@ -140,7 +146,7 @@ struct RoutesListView: View {
 struct RouteRowView: View {
     let route: TrailRoute
     let onExportFile: (TrailRoute) -> Void
-    let onShowDetails: (TrailRoute) -> Void
+    let onTap: (TrailRoute) -> Void
     
     private var formatter: DateFormatter {
         let formatter = DateFormatter()
@@ -149,10 +155,40 @@ struct RouteRowView: View {
         return formatter
     }
     
+    private func routeColorName() -> String {
+        route.colorName ?? "blue"
+    }
+    
+    private func routeColor() -> Color {
+        let name = routeColorName().lowercased()
+        switch name {
+        case "black": return .black
+        case "blue": return .blue
+        case "brown": return .brown
+        case "cyan": return .cyan
+        case "gray", "grey": return .gray
+        case "green": return .green
+        case "indigo": return .indigo
+        case "mint": return .mint
+        case "orange": return .orange
+        case "pink": return .pink
+        case "purple": return .purple
+        case "teal": return .teal
+        case "white": return .white
+        case "yellow": return .yellow
+        default: return .blue
+        }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(route.name)
-                .font(.headline)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(routeColor())
+                    .frame(width: 10, height: 10)
+                Text(route.name)
+                    .font(.headline)
+            }
             
             Text("Started: \(formatter.string(from: route.startTime))")
                 .font(.caption)
@@ -170,7 +206,7 @@ struct RouteRowView: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { onShowDetails(route) }
+        .onTapGesture { onTap(route) }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 onExportFile(route)
@@ -285,26 +321,9 @@ struct POIRowView: View {
         return formatter
     }
     
-    // Helper function to get a system image for the category
-    private func systemImageForCategory(_ category: String) -> String {
-        switch category.lowercased() {
-        case "animals": return "pawprint.fill"
-        case "art installation": return "paintpalette.fill"
-        case "building": return "building.2.fill"
-        case "garden": return "leaf.fill"
-        case "playground": return "figure.child"
-        case "poi": return "mappin.circle.fill"
-        case "restroom": return "toilet.fill"
-        case "seat": return "chair.fill"
-        case "shop": return "cart.fill"
-        case "tree": return "tree.fill"
-        default: return "mappin.circle.fill" // Default icon for unknown categories
-        }
-    }
-    
     var body: some View {
         HStack {
-            Image(systemName: systemImageForCategory(poi.category))
+            Image(systemName: "mappin.circle.fill")
                 .foregroundColor(.blue)
                 .frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
@@ -595,6 +614,122 @@ fileprivate extension DateFormatter {
     }()
 }
 
+extension SavedDataView {
+    private func colorOptions() -> [String] {
+        ["black","blue","brown","cyan","gray","grey","green","indigo","mint","orange","pink","purple","teal","white","yellow"]
+    }
+    
+    private func swiftUIColor(for name: String) -> Color {
+        switch name.lowercased() {
+        case "black": return .black
+        case "blue": return .blue
+        case "brown": return .brown
+        case "cyan": return .cyan
+        case "gray": return .gray
+        case "grey": return .gray
+        case "green": return .green
+        case "indigo": return .indigo
+        case "mint": return .mint
+        case "orange": return .orange
+        case "pink": return .pink
+        case "purple": return .purple
+        case "teal": return .teal
+        case "white": return .white
+        case "yellow": return .yellow
+        default: return .blue
+        }
+    }
+    
+    private func dataManagerColorName(for route: TrailRoute) -> String {
+        route.colorName ?? "blue"
+    }
+    
+    private func storeColorName(_ name: String, for route: TrailRoute) {
+        let updated = TrailRoute(id: route.id, name: route.name, startTime: route.startTime, endTime: route.endTime, coordinates: route.coordinates, segments: route.segments, colorName: name)
+        dataManager.updateRoute(updated)
+    }
+    
+    private func updateRoute(_ route: TrailRoute, newName: String, newColorName: String) {
+        let updatedRoute = TrailRoute(id: route.id, name: newName, startTime: route.startTime, endTime: route.endTime, coordinates: route.coordinates, segments: route.segments, colorName: newColorName)
+        dataManager.updateRoute(updatedRoute)
+    }
+}
+
+struct RouteEditModal: View {
+    let route: TrailRoute
+    @Binding var name: String
+    @Binding var colorName: String
+    let onSave: (String, String) -> Void
+    
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("Route Name") {
+                    TextField("Enter a name", text: $name)
+                }
+                Section("Color") {
+                    Picker("Color", selection: $colorName) {
+                        ForEach(colorOptions(), id: \.self) { n in
+                            HStack {
+                                Circle()
+                                    .fill(swiftUIColor(for: n))
+                                    .frame(width: 16, height: 16)
+                                Text(n.capitalized)
+                            }
+                            .tag(n)
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                }
+            }
+            .navigationTitle("Edit Route")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        onSave(trimmedName, colorName)
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+    
+    private func colorOptions() -> [String] {
+        ["black","blue","brown","cyan","gray","grey","green","indigo","mint","orange","pink","purple","teal","white","yellow"]
+    }
+    
+    private func swiftUIColor(for name: String) -> Color {
+        switch name.lowercased() {
+        case "black": return .black
+        case "blue": return .blue
+        case "brown": return .brown
+        case "cyan": return .cyan
+        case "gray": return .gray
+        case "grey": return .gray
+        case "green": return .green
+        case "indigo": return .indigo
+        case "mint": return .mint
+        case "orange": return .orange
+        case "pink": return .pink
+        case "purple": return .purple
+        case "teal": return .teal
+        case "white": return .white
+        case "yellow": return .yellow
+        default: return .blue
+        }
+    }
+}
+
 #Preview {
     SavedDataView(dataManager: DataManager())
 }
+

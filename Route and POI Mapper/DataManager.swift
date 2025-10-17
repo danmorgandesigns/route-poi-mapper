@@ -68,6 +68,13 @@ class DataManager: ObservableObject {
         saveRoutesToFile()
     }
     
+    func updateRoute(_ updated: TrailRoute) {
+        if let index = savedRoutes.firstIndex(where: { $0.id == updated.id }) {
+            savedRoutes[index] = updated
+            saveRoutesToFile()
+        }
+    }
+    
     func exportRouteAsGeoJSON(_ route: TrailRoute) -> String {
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: route.geoJSON, options: .prettyPrinted)

@@ -11,6 +11,10 @@ import Combine
 import UIKit
 import CoreLocation
 
+final class ColoredPolyline: MKPolyline {
+    var color: UIColor = .systemBlue
+}
+
 struct MapView: View {
     @ObservedObject var locationManager: LocationManager
     @ObservedObject var dataManager: DataManager
@@ -32,8 +36,44 @@ struct MapView: View {
     @State private var didCenterInitially = false
     @State private var showingSettings = false
     @State private var showingInfo: Bool = false
+
+    @State private var showingLocationDisabledModal = false
+    @State private var pendingActionAfterLocationEnable: (() -> Void)? = nil
     
-    private var routePolylines: [MKPolyline] {
+    @State private var suppressAutoCenter = false
+    @State private var allowRegionSync = true
+    
+    @State private var isLocationEnabled = true
+    
+    private func uiColor(for name: String) -> UIColor {
+        switch name.lowercased() {
+        case "black": return .black
+        case "blue": return .systemBlue
+        case "brown": return .brown
+        case "cyan": return .cyan
+        case "gray", "grey": return .systemGray
+        case "green": return .systemGreen
+        case "indigo": return UIColor { trait in
+            return UIColor.systemIndigo
+        }
+        case "mint": return UIColor { _ in
+            return UIColor.systemMint
+        }
+        case "orange": return .systemOrange
+        case "pink": return UIColor { _ in
+            return UIColor.systemPink
+        }
+        case "purple": return .systemPurple
+        case "teal": return UIColor { _ in
+            return UIColor.systemTeal
+        }
+        case "white": return .white
+        case "yellow": return .systemYellow
+        default: return .systemBlue
+        }
+    }
+    
+    private var activeRoutePolylines: [MKPolyline] {
         var lines: [MKPolyline] = []
         // Finalized segments
         for segment in locationManager.currentSegments {
@@ -56,21 +96,108 @@ struct MapView: View {
         return lines
     }
     
+    private var savedPolylines: [MKPolyline] {
+        var lines: [MKPolyline] = []
+        for route in dataManager.savedRoutes {
+            let segs: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
+            let colorName = route.colorName ?? "blue"
+            let color = uiColor(for: colorName)
+            for seg in segs {
+                let coords = seg.map { CLLocationCoordinate2D(latitude: $0[1], longitude: $0[0]) }
+                guard coords.count > 1 else { continue }
+                let poly = ColoredPolyline(coordinates: coords, count: coords.count)
+                poly.color = color
+                lines.append(poly)
+            }
+        }
+        return lines
+    }
+    
+    private var savedRouteMidpointAnnotations: [RouteMidpointAnnotation] {
+        var annotations: [RouteMidpointAnnotation] = []
+        for route in dataManager.savedRoutes {
+            let segs: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
+            // Flatten all coords in order
+            let coords = segs.flatMap { $0 }.map { CLLocationCoordinate2D(latitude: $0[1], longitude: $0[0]) }
+            guard coords.count > 1 else { continue }
+            
+            // Compute total length
+            var totalLength: CLLocationDistance = 0
+            for i in 1..<coords.count {
+                let p1 = CLLocation(latitude: coords[i-1].latitude, longitude: coords[i-1].longitude)
+                let p2 = CLLocation(latitude: coords[i].latitude, longitude: coords[i].longitude)
+                totalLength += p1.distance(from: p2)
+            }
+            guard totalLength > 0 else { continue }
+            
+            let halfLength = totalLength / 2
+            
+            // Walk coords to find midpoint along the route
+            var accLength: CLLocationDistance = 0
+            var midpointCoordinate: CLLocationCoordinate2D? = nil
+            for i in 1..<coords.count {
+                let p1 = CLLocation(latitude: coords[i-1].latitude, longitude: coords[i-1].longitude)
+                let p2 = CLLocation(latitude: coords[i].latitude, longitude: coords[i].longitude)
+                let segmentLength = p1.distance(from: p2)
+                
+                if accLength + segmentLength >= halfLength {
+                    let needed = halfLength - accLength
+                    let fraction = needed / segmentLength
+                    let lat = coords[i-1].latitude + (coords[i].latitude - coords[i-1].latitude) * fraction
+                    let lon = coords[i-1].longitude + (coords[i].longitude - coords[i-1].longitude) * fraction
+                    midpointCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                    break
+                } else {
+                    accLength += segmentLength
+                }
+            }
+            if let midCoord = midpointCoordinate {
+                let annotation = RouteMidpointAnnotation()
+                annotation.coordinate = midCoord
+                annotation.title = route.name
+                annotation.routeName = route.name
+                annotations.append(annotation)
+            }
+        }
+        return annotations
+    }
+    
     var body: some View {
         NavigationView {
             ZStack {
-                UIKitMapView(region: $region, mapType: $mapType, polylines: routePolylines, poiAnnotations: poiAnnotations)
-                    .ignoresSafeArea(.all)
-                    .onReceive(locationManager.$location) { location in
-                        if let location = location, !didCenterInitially {
-                            didCenterInitially = true
-                            withAnimation { region.center = location.coordinate }
+                let saved = savedPolylines
+                UIKitMapView(
+                    region: $region,
+                    mapType: $mapType,
+                    polylines: activeRoutePolylines + saved,
+                    activeCount: activeRoutePolylines.count,
+                    poiAnnotations: poiAnnotations,
+                    routeMidpointAnnotations: savedRouteMidpointAnnotations,
+                    allowRegionSync: allowRegionSync,
+                    showsUserLocation: isLocationEnabled,
+                    onUserInteraction: { suppressAutoCenter = true; allowRegionSync = false }
+                )
+                .ignoresSafeArea(.all)
+                .onReceive(locationManager.$location) { location in
+                    if isLocationEnabled {
+                        if let location = location {
+                            if !didCenterInitially {
+                                didCenterInitially = true
+                                withAnimation { region.center = location.coordinate }
+                            }
+                            if locationManager.isTracking && !suppressAutoCenter {
+                                withAnimation { region.center = location.coordinate }
+                            }
                         }
                     }
-                    .onReceive(dataManager.$savedPOIs) { poIs in
+                }
+                .onReceive(dataManager.$savedPOIs) { poIs in
+                    // Only recenter if tracking (as previously)
+                    if locationManager.isTracking {
                         guard let latest = poIs.last else { return }
                         region.center = latest.coordinate.clLocationCoordinate2D
                     }
+                }
                 
                 // Route info overlay with subtle material effect
                 VStack {
@@ -99,13 +226,21 @@ struct MapView: View {
                         }
                         
                         Button(action: {
-                            if let location = locationManager.location {
-                                withAnimation {
-                                    region.center = location.coordinate
+                            isLocationEnabled.toggle()
+                            if isLocationEnabled {
+                                suppressAutoCenter = false
+                                allowRegionSync = true
+                                if let location = locationManager.location {
+                                    withAnimation {
+                                        region.center = location.coordinate
+                                    }
                                 }
+                            } else {
+                                suppressAutoCenter = true
+                                allowRegionSync = false
                             }
                         }) {
-                            Image(systemName: "location")
+                            Image(systemName: isLocationEnabled ? "location" : "location.slash")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundColor(.primary)
                                 .padding(.trailing, 6)
@@ -137,7 +272,13 @@ struct MapView: View {
                 ToolbarItem(placement: .bottomBar) {
                     HStack {
                         Button(action: {
-                            showingRouteModal = true
+                            if !isLocationEnabled {
+                                // Defer the intended action until user enables location
+                                pendingActionAfterLocationEnable = { showingRouteModal = true }
+                                showingLocationDisabledModal = true
+                            } else {
+                                showingRouteModal = true
+                            }
                         }) {
                             Image(systemName: "figure.hiking")
                         }
@@ -146,21 +287,26 @@ struct MapView: View {
                         Spacer()
                         
                         Button(action: {
-                            print("Button tapped!")
-                            if let currentLocation = locationManager.location {
-                                print("Location available: \(currentLocation)")
-                                selectedPOILocation = currentLocation
-                                // Use a small delay to ensure state is updated before presenting
-                                DispatchQueue.main.async {
-                                    showingQuickPOIModal = true
+                            if !isLocationEnabled {
+                                pendingActionAfterLocationEnable = {
+                                    if let currentLocation = locationManager.location {
+                                        selectedPOILocation = currentLocation
+                                        DispatchQueue.main.async { showingQuickPOIModal = true }
+                                    } else {
+                                        let dummyLocation = CLLocation(latitude: 37.7749, longitude: -122.4194)
+                                        selectedPOILocation = dummyLocation
+                                        DispatchQueue.main.async { showingQuickPOIModal = true }
+                                    }
                                 }
+                                showingLocationDisabledModal = true
                             } else {
-                                print("No location available")
-                                // For debugging, create a dummy location
-                                let dummyLocation = CLLocation(latitude: 37.7749, longitude: -122.4194)
-                                selectedPOILocation = dummyLocation
-                                DispatchQueue.main.async {
-                                    showingQuickPOIModal = true
+                                if let currentLocation = locationManager.location {
+                                    selectedPOILocation = currentLocation
+                                    DispatchQueue.main.async { showingQuickPOIModal = true }
+                                } else {
+                                    let dummyLocation = CLLocation(latitude: 37.7749, longitude: -122.4194)
+                                    selectedPOILocation = dummyLocation
+                                    DispatchQueue.main.async { showingQuickPOIModal = true }
                                 }
                             }
                         }) {
@@ -270,6 +416,28 @@ struct MapView: View {
         .sheet(isPresented: $showingInfo) {
             InfoView()
         }
+        .confirmationDialog(
+            "Location is turned off",
+            isPresented: $showingLocationDisabledModal,
+            titleVisibility: .visible
+        ) {
+            Button("Turn On Location") {
+                isLocationEnabled = true
+                suppressAutoCenter = false
+                allowRegionSync = true
+                if let location = locationManager.location {
+                    withAnimation { region.center = location.coordinate }
+                }
+                // Perform the deferred action if any
+                pendingActionAfterLocationEnable?()
+                pendingActionAfterLocationEnable = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingActionAfterLocationEnable = nil
+            }
+        } message: {
+            Text("Location services for the map are currently disabled. Turn it on to proceed.")
+        }
     }
     
     private var poiAnnotations: [PointOfInterest] {
@@ -277,36 +445,116 @@ struct MapView: View {
     }
 }
 
+struct CapsuleLabel: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundColor(.primary)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(.regularMaterial, in: Capsule())
+    }
+}
+
+final class RouteMidpointAnnotation: MKPointAnnotation {
+    var routeName: String = ""
+}
+
+// New POIAnnotation class with poiName property
+final class POIAnnotation: MKPointAnnotation {
+    var poiName: String = ""
+}
+
 struct UIKitMapView: UIViewRepresentable {
     @Binding var region: MKCoordinateRegion
     @Binding var mapType: MKMapType
     var polylines: [MKPolyline]
+    var activeCount: Int
     var poiAnnotations: [PointOfInterest]
+    var routeMidpointAnnotations: [RouteMidpointAnnotation] = []
+    
+    var allowRegionSync: Bool = true
+    var showsUserLocation: Bool = true
+    
+    var onUserInteraction: (() -> Void)? = nil
     
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
         map.delegate = context.coordinator
-        map.showsUserLocation = true
+        map.showsUserLocation = showsUserLocation
         map.mapType = mapType
         map.region = region
         return map
     }
     
     func updateUIView(_ uiView: MKMapView, context: Context) {
-        uiView.setRegion(region, animated: false)
+        if allowRegionSync {
+            if uiView.region.center.latitude != region.center.latitude ||
+                uiView.region.center.longitude != region.center.longitude ||
+                uiView.region.span.latitudeDelta != region.span.latitudeDelta ||
+                uiView.region.span.longitudeDelta != region.span.longitudeDelta {
+                uiView.setRegion(region, animated: false)
+            }
+        }
         if uiView.mapType != mapType { uiView.mapType = mapType }
+        if uiView.showsUserLocation != showsUserLocation { uiView.showsUserLocation = showsUserLocation }
         // Update overlays
         uiView.removeOverlays(uiView.overlays)
         uiView.addOverlays(polylines)
         // Update POI annotations
         uiView.removeAnnotations(uiView.annotations.filter { !($0 is MKUserLocation) })
-        let annotations = poiAnnotations.map { poi -> MKPointAnnotation in
-            let ann = MKPointAnnotation()
+        
+        // Use POIAnnotation instead of MKPointAnnotation for POIs
+        let annotations = poiAnnotations.map { poi -> POIAnnotation in
+            let ann = POIAnnotation()
+            ann.poiName = poi.name
             ann.title = poi.name
             ann.coordinate = poi.coordinate.clLocationCoordinate2D
             return ann
         }
         uiView.addAnnotations(annotations)
+        
+        // Add route midpoint annotations
+        uiView.addAnnotations(routeMidpointAnnotations)
+    }
+    
+    // PaddingLabel helper to provide intrinsic content padding around text
+    final class PaddingLabel: UILabel {
+        var insets = UIEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
+        override func drawText(in rect: CGRect) {
+            super.drawText(in: rect.inset(by: insets))
+        }
+        override var intrinsicContentSize: CGSize {
+            let size = super.intrinsicContentSize
+            return CGSize(width: size.width + insets.left + insets.right, height: size.height + insets.top + insets.bottom)
+        }
+    }
+    
+    // Shared helper to build a capsule label matching trail route style
+    func makeCapsuleLabel(text: String) -> (view: PaddingLabel, size: CGSize, font: UIFont) {
+        let font = UIFont.systemFont(ofSize: UIFont.preferredFont(forTextStyle: .caption2).pointSize, weight: .semibold)
+        let maxLabelWidth: CGFloat = 280
+        let textSize = (text as NSString).boundingRect(
+            with: CGSize(width: maxLabelWidth, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        ).size
+        let labelPaddingH: CGFloat = 4
+        let labelPaddingV: CGFloat = 2
+        let labelWidth = min(maxLabelWidth, ceil(textSize.width) + labelPaddingH * 2)
+        let labelHeight = ceil(font.lineHeight) + labelPaddingV * 2
+        let label = PaddingLabel()
+        label.text = text
+        label.font = font
+        label.textAlignment = .center
+        label.textColor = UIColor.label
+        label.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.7)
+        label.layer.cornerRadius = labelHeight / 2
+        label.clipsToBounds = true
+        return (label, CGSize(width: labelWidth, height: labelHeight), font)
     }
     
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -318,13 +566,212 @@ struct UIKitMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let polyline = overlay as? MKPolyline {
                 let renderer = MKPolylineRenderer(polyline: polyline)
-                renderer.strokeColor = UIColor.systemRed
+                let idx = parent.polylines.firstIndex(of: polyline) ?? 0
+                let isActive = idx < parent.activeCount
+                if isActive {
+                    renderer.strokeColor = UIColor.systemRed
+                } else if let colored = polyline as? ColoredPolyline {
+                    renderer.strokeColor = colored.color
+                } else {
+                    renderer.strokeColor = UIColor.systemBlue
+                }
                 renderer.lineWidth = 4
                 renderer.lineJoin = .round
                 renderer.lineCap = .round
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
+        }
+        
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation {
+                return nil
+            }
+
+            if let routeMidpoint = annotation as? RouteMidpointAnnotation {
+                let id = "RouteMidpointAnnotation"
+                var annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                if annotationView == nil {
+                    annotationView = MKAnnotationView(annotation: routeMidpoint, reuseIdentifier: id)
+                    annotationView?.canShowCallout = false
+                    
+                    // Container sized to fit icon + label
+                    let iconDiameter: CGFloat = 24
+                    let spacing: CGFloat = 2
+                    
+                    // Measure label width somewhat generously; we'll cap later
+                    let nameText = routeMidpoint.routeName
+                    let (label, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                    
+                    let container = UIView(frame: CGRect(x: 0, y: 0, width: max(iconDiameter, labelSize.width), height: iconDiameter + spacing + labelSize.height))
+                    container.backgroundColor = .clear
+                    
+                    // Brown circular icon
+                    let circleView = UIView(frame: CGRect(x: (container.bounds.width - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
+                    circleView.backgroundColor = UIColor.brown
+                    circleView.layer.cornerRadius = iconDiameter / 2
+                    circleView.clipsToBounds = true
+                    
+                    let imageView = UIImageView(frame: circleView.bounds)
+                    imageView.contentMode = .center
+                    let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+                    imageView.image = UIImage(systemName: "figure.hiking", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                    
+                    circleView.addSubview(imageView)
+                    container.addSubview(circleView)
+                    
+                    label.frame = CGRect(x: (container.bounds.width - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
+                    container.addSubview(label)
+                    
+                    annotationView?.subviews.forEach { $0.removeFromSuperview() }
+                    annotationView?.addSubview(container)
+                    annotationView?.frame = container.frame
+                    annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
+                } else {
+                    annotationView?.annotation = routeMidpoint
+                    // Update label text
+                    if let container = annotationView?.subviews.first {
+                        for subview in container.subviews {
+                            if let label = subview as? UILabel {
+                                let nameText = routeMidpoint.routeName
+                                label.text = nameText
+                                
+                                let iconDiameter: CGFloat = 24
+                                let spacing: CGFloat = 2
+                                
+                                let (_, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                                
+                                label.frame = CGRect(x: (container.bounds.width - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
+                                
+                                // Also update container and annotationView frame
+                                let containerWidth = max(iconDiameter, labelSize.width)
+                                let containerHeight = iconDiameter + spacing + labelSize.height
+                                
+                                container.frame = CGRect(x: 0, y: 0, width: containerWidth, height: containerHeight)
+                                annotationView?.frame = container.frame
+                                annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
+                            }
+                        }
+                    }
+                }
+                return annotationView
+            }
+            
+            if let poiAnnotation = annotation as? POIAnnotation {
+                let id = "POIAnnotationView"
+                var annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                let iconDiameter: CGFloat = 24
+                let spacing: CGFloat = 2
+                let nameText = poiAnnotation.poiName
+                
+                if annotationView == nil {
+                    annotationView = MKAnnotationView(annotation: poiAnnotation, reuseIdentifier: id)
+                    annotationView?.canShowCallout = false
+                    
+                    // Remove existing subviews if any (defensive)
+                    annotationView?.subviews.forEach { $0.removeFromSuperview() }
+                    
+                    let container = UIView(frame: CGRect(x: 0, y: 0, width: iconDiameter, height: iconDiameter))
+                    container.backgroundColor = .clear
+                    
+                    let circleView = UIView(frame: CGRect(x: (container.bounds.width - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
+                    circleView.backgroundColor = UIColor.systemRed
+                    circleView.layer.cornerRadius = iconDiameter / 2
+                    circleView.clipsToBounds = true
+                    circleView.tag = 1001
+                    
+                    let imageView = UIImageView(frame: circleView.bounds)
+                    imageView.contentMode = .center
+                    let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+                    imageView.image = UIImage(systemName: "mappin.and.ellipse", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                    
+                    circleView.addSubview(imageView)
+                    container.addSubview(circleView)
+                    
+                    // Create hosting controller for CapsuleLabel
+                    let hosting = UIHostingController(rootView: CapsuleLabel(text: nameText))
+                    hosting.view.backgroundColor = .clear
+                    let labelSize = hosting.sizeThatFits(in: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+                    let labelWidth = min(280, labelSize.width)
+                    let labelHeight = labelSize.height
+                    let labelX = (container.bounds.width - labelWidth)/2
+                    let labelY = iconDiameter + spacing
+                    hosting.view.frame = CGRect(x: labelX, y: labelY, width: labelWidth, height: labelHeight)
+                    hosting.view.tag = 1002
+                    container.addSubview(hosting.view)
+                    
+                    let newWidth = max(iconDiameter, labelWidth)
+                    let newHeight = iconDiameter + spacing + labelHeight
+                    container.frame = CGRect(x: 0, y: 0, width: newWidth, height: newHeight)
+                    
+                    annotationView?.addSubview(container)
+                    annotationView?.frame = container.frame
+                    annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
+                } else {
+                    annotationView?.annotation = poiAnnotation
+                    
+                    if let container = annotationView?.subviews.first {
+                        // Remove previous label view if present
+                        if let oldLabelView = container.viewWithTag(1002) {
+                            oldLabelView.removeFromSuperview()
+                        }
+                        // Create a fresh hosting controller for the updated text
+                        let hosting = UIHostingController(rootView: CapsuleLabel(text: nameText))
+                        hosting.view.backgroundColor = .clear
+                        let size = hosting.sizeThatFits(in: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+                        let w = min(280, size.width)
+                        let h = size.height
+                        let x = (container.bounds.width - w)/2
+                        let y = iconDiameter + spacing
+                        hosting.view.frame = CGRect(x: x, y: y, width: w, height: h)
+                        hosting.view.tag = 1002
+                        container.addSubview(hosting.view)
+                        // Update container
+                        let cw = max(iconDiameter, w)
+                        let ch = iconDiameter + spacing + h
+                        container.frame = CGRect(x: 0, y: 0, width: cw, height: ch)
+                        annotationView?.frame = container.frame
+                        annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
+                        
+                        // Update circle view only
+                        if let circle = container.viewWithTag(1001) {
+                            circle.backgroundColor = UIColor.systemRed
+                            if let imageView = circle.subviews.first as? UIImageView {
+                                let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
+                                imageView.image = UIImage(systemName: "mappin.and.ellipse", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                            }
+                        }
+                    }
+                }
+                return annotationView
+            }
+            
+            // Default pin for others (e.g. POIs fallback)
+            if let mkAnnotation = annotation as? MKPointAnnotation {
+                let id = "DefaultPin"
+                var pinView = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKPinAnnotationView
+                if pinView == nil {
+                    pinView = MKPinAnnotationView(annotation: mkAnnotation, reuseIdentifier: id)
+                    pinView?.canShowCallout = true
+                    pinView?.animatesDrop = false
+                    pinView?.pinTintColor = .red
+                } else {
+                    pinView?.annotation = mkAnnotation
+                }
+                return pinView
+            }
+            
+            return nil
+        }
+        
+        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            // Detect if region change caused by user gesture
+            let view = mapView.subviews.first(where: { $0 is UIScrollView }) as? UIScrollView
+            let isUserGesture = view?.isDragging == true || view?.isDecelerating == true || view?.isZooming == true
+            
+            if isUserGesture {
+                parent.onUserInteraction?()
+            }
         }
     }
 }

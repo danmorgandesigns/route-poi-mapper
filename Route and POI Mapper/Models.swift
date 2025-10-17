@@ -11,7 +11,7 @@ import CoreLocation
 // MARK: - Route Models
 
 struct TrailRoute: Codable, Identifiable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let startTime: Date
     let endTime: Date?
@@ -19,6 +19,42 @@ struct TrailRoute: Codable, Identifiable {
     // Optional multi-segment storage: [[[lon, lat, elev], ...], ...]
     let segments: [[[Double]]]? // backward-compatible; nil means single segment implied by coordinates
     
+    var colorName: String? = nil
+
+    init(id: UUID = UUID(), name: String, startTime: Date, endTime: Date?, coordinates: [TrailCoordinate], segments: [[[Double]]]? = nil, colorName: String? = nil) {
+        self.id = id
+        self.name = name
+        self.startTime = startTime
+        self.endTime = endTime
+        self.coordinates = coordinates
+        self.segments = segments
+        self.colorName = colorName
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, startTime, endTime, coordinates, segments, colorName
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try c.decode(String.self, forKey: .name)
+        self.startTime = try c.decode(Date.self, forKey: .startTime)
+        self.endTime = try c.decodeIfPresent(Date.self, forKey: .endTime)
+        self.coordinates = try c.decode([TrailCoordinate].self, forKey: .coordinates)
+        self.segments = try c.decodeIfPresent([[[Double]]].self, forKey: .segments)
+        self.colorName = try c.decodeIfPresent(String.self, forKey: .colorName)
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(startTime, forKey: .startTime)
+        try c.encodeIfPresent(endTime, forKey: .endTime)
+        try c.encode(coordinates, forKey: .coordinates)
+        try c.encodeIfPresent(segments, forKey: .segments)
+        try c.encodeIfPresent(colorName, forKey: .colorName)
+    }
+
     // Legacy representation (kept for backward compatibility in UI code that still reads it)
     var geoJSON: [String: Any] {
         let coordinateArray = coordinates.map { [$0.longitude, $0.latitude] }
@@ -49,7 +85,7 @@ struct TrailRoute: Codable, Identifiable {
             "properties": [
                 "name": name,
                 "description": "",
-                "color": "",
+                "color": colorName ?? "",
                 "info": info,
                 "imageURL": ""
             ]
