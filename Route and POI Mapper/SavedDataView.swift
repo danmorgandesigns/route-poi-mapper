@@ -527,7 +527,7 @@ struct RouteExportShareView: View {
         // Build segments and compute info string
         let segments: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
         let (miles, feet) = computeDistanceMilesAndElevationFeet(from: segments)
-        let infoString = String(format: "Length: %.2f miles. Elevation %.0f feet.", miles, feet)
+        let infoString = String(format: "Length: %.2f miles. Elevation gain: %.0f feet.", miles, feet)
         let collection = route.exportGeoJSON(info: infoString)
 
         // Serialize to JSON data
