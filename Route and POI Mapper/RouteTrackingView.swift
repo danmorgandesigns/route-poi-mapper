@@ -15,6 +15,7 @@ struct RouteTrackingView: View {
     
     @State private var showingSaveDialog = false
     @State private var routeName = ""
+    @State private var showingFirstPointIndicator = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -121,6 +122,26 @@ struct StatusCardView: View {
                     .foregroundColor(.red)
                     .font(.caption)
             }
+            
+            // Show first point acquisition status
+            if locationManager.isTracking && locationManager.currentRoute.isEmpty {
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                    Text("Acquiring first point...")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+            } else if locationManager.isTracking && !locationManager.currentRoute.isEmpty {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.caption)
+                    Text("First point recorded")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
         }
         .padding()
         .glassEffect(.regular, in: .rect(cornerRadius: 12))
@@ -214,11 +235,20 @@ struct TrackingControlsView: View {
                             .disabled(locationManager.currentRoute.isEmpty)
                         }
                     } else {
-                        Button("Start Tracking") {
+                        Button(action: {
                             locationManager.startRouteTracking()
+                        }) {
+                            HStack {
+                                if locationManager.isTracking && locationManager.currentRoute.isEmpty {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                }
+                                Text(locationManager.isTracking && locationManager.currentRoute.isEmpty ? "Getting First Point..." : "Start Tracking")
+                            }
                         }
                         .buttonStyle(.glassProminent)
-                        .disabled(locationManager.location == nil)
+                        .disabled(locationManager.location == nil || (locationManager.isTracking && locationManager.currentRoute.isEmpty))
                     }
                 }
             }

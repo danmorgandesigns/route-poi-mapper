@@ -24,6 +24,7 @@ class LocationManager: NSObject, ObservableObject {
     @Published var currentSegments: [[[Double]]] = [] // MultiLineString segments: [ [ [lon, lat, elev], ... ], ... ]
     private var currentSegment: [[Double]] = []
     @Published var routeStartTime: Date?
+    private var hasRecordedFirstPoint = false
     
     // Error handling
     @Published var errorMessage: String?
@@ -77,6 +78,18 @@ class LocationManager: NSObject, ObservableObject {
         isPaused = false
         routeStartTime = Date()
         isTracking = true
+        hasRecordedFirstPoint = false
+        
+        // Record the current location immediately if available
+        if let currentLocation = location {
+            let trailCoordinate = TrailCoordinate(from: currentLocation)
+            currentRoute.append(trailCoordinate)
+            let lon = currentLocation.coordinate.longitude
+            let lat = currentLocation.coordinate.latitude
+            let elev = currentLocation.altitude
+            currentSegment.append([lon, lat, elev])
+            hasRecordedFirstPoint = true
+        }
         
         // Enable background updates if capability is present
         if !hasConfiguredForBackground {
@@ -92,13 +105,27 @@ class LocationManager: NSObject, ObservableObject {
             locationManager.requestAlwaysAuthorization()
         }
         
-        // Apply user-configured update frequency while tracking
-        locationManager.distanceFilter = updateFrequencyMeters
+        
+        // Temporarily set minimal distance filter for immediate responsiveness
+        locationManager.distanceFilter = 0 // No distance filter to catch first point immediately
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.activityType = .fitness
         locationManager.pausesLocationUpdatesAutomatically = false
         
         locationManager.startUpdatingLocation()
+        
+        // Request an immediate location update to ensure we get the starting point quickly
+        locationManager.requestLocation()
+        
+        // Schedule restoration of user's distance filter after a brief delay
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            await MainActor.run {
+                if isTracking {
+                    locationManager.distanceFilter = updateFrequencyMeters
+                }
+            }
+        }
     }
     
     func pauseRouteTracking() {
@@ -124,6 +151,7 @@ class LocationManager: NSObject, ObservableObject {
     func stopRouteTracking() {
         isTracking = false
         isPaused = false
+        hasRecordedFirstPoint = false
         if !currentSegment.isEmpty {
             currentSegments.append(currentSegment)
             currentSegment.removeAll()
@@ -195,8 +223,13 @@ extension LocationManager: CLLocationManagerDelegate {
                     let lon = location.coordinate.longitude
                     let lat = location.coordinate.latitude
                     let elev = location.altitude
-                    // Simple distance filter: only append if moved > routePrecisionMeters from last point in currentSegment
-                    if let last = currentSegment.last {
+                    
+                    // Always record the first point regardless of precision thresholds
+                    if !hasRecordedFirstPoint {
+                        currentSegment.append([lon, lat, elev])
+                        hasRecordedFirstPoint = true
+                    } else if let last = currentSegment.last {
+                        // Apply precision filtering for subsequent points
                         let dLon = lon - last[0]
                         let dLat = lat - last[1]
                         let approxMeters = sqrt(dLon*dLon + dLat*dLat) * 111_000.0
@@ -204,6 +237,7 @@ extension LocationManager: CLLocationManagerDelegate {
                             currentSegment.append([lon, lat, elev])
                         }
                     } else {
+                        // Fallback: if somehow we don't have a last point, add this one
                         currentSegment.append([lon, lat, elev])
                     }
                 }

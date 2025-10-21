@@ -201,6 +201,14 @@ class DataManager: ObservableObject {
     }
     
     func exportPOIsAsCustomJSONFile() -> URL? {
+        print("[POI Export] Starting export with \(savedPOIs.count) POIs")
+        
+        // Check if we have any POIs to export
+        guard !savedPOIs.isEmpty else {
+            print("[POI Export] No POIs to export")
+            return nil
+        }
+        
         // Build array of ExportPOI to guarantee key order
         let exportItems: [ExportPOI] = savedPOIs.map { poi in
             ExportPOI(
@@ -212,22 +220,44 @@ class DataManager: ObservableObject {
                 imageURL: ""
             )
         }
+        
+        print("[POI Export] Created \(exportItems.count) export items")
+        
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
             let data = try encoder.encode(exportItems)
+            
+            print("[POI Export] Encoded data size: \(data.count) bytes")
+            
             let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            let filename = formatter.string(from: Date()) + ".json"
+            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let filename = "POIs-\(formatter.string(from: Date())).json"
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+            
+            // Remove existing file if it exists
             try? FileManager.default.removeItem(at: tempURL)
+            
+            // Write the file
             try data.write(to: tempURL, options: .atomic)
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path), let size = attrs[.size] as? NSNumber {
-                print("[POI Export] Wrote temp file:", tempURL.lastPathComponent, "size:", size, "bytes")
+            
+            // Verify file was written
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path), 
+                   let size = attrs[.size] as? NSNumber {
+                    print("[POI Export] Successfully wrote file: \(filename), size: \(size) bytes")
+                    return tempURL
+                } else {
+                    print("[POI Export] File exists but couldn't read attributes")
+                    return tempURL
+                }
+            } else {
+                print("[POI Export] File was not created at: \(tempURL.path)")
+                return nil
             }
-            return tempURL
         } catch {
-            print("Error exporting custom POIs JSON: \(error)")
+            print("[POI Export] Error exporting custom POIs JSON: \(error)")
+            print("[POI Export] Error details: \(error.localizedDescription)")
             return nil
         }
     }

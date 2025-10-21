@@ -15,14 +15,59 @@ struct SavedDataView: View {
     @Environment(\.dismiss) private var dismiss
     
     @State private var selectedTab = 0
-    @State private var showingShareSheet = false
-    @State private var shareContent = ""
-    @State private var shareURL: URL? = nil
-    
     @State private var routeToShare: TrailRoute? = nil
     @State private var routeBeingEdited: TrailRoute? = nil
     @State private var editedRouteName: String = ""
     @State private var editedRouteColorName: String = "blue"
+    
+    // Add units system support
+    @AppStorage("unitsSystem") private var unitsSystemRaw: String = "imperial"
+    private var unitsSystem: UnitsSystem {
+        UnitsSystem(rawValue: unitsSystemRaw) ?? .imperial
+    }
+    
+    enum UnitsSystem: String, CaseIterable {
+        case imperial = "imperial"
+        case metric = "metric"
+    }
+    
+    // Helper functions for unit conversions
+    private func formatDistanceAndElevation(totalMeters: Double, totalAscentMeters: Double) -> (distance: Double, elevation: Double, distanceUnit: String, elevationUnit: String) {
+        switch unitsSystem {
+        case .imperial:
+            let miles = totalMeters / 1609.344
+            let feet = totalAscentMeters * 3.28084
+            return (miles, feet, "miles", "feet")
+        case .metric:
+            let kilometers = totalMeters / 1000.0
+            let meters = totalAscentMeters
+            return (kilometers, meters, "km", "m")
+        }
+    }
+    
+    private func computeDistanceAndElevation(from segments: [[[Double]]]) -> (totalMeters: Double, totalAscentMeters: Double) {
+        var totalMeters: Double = 0
+        var totalAscentMeters: Double = 0
+        for seg in segments {
+            guard seg.count > 1 else { continue }
+            for i in 1..<seg.count {
+                let prev = seg[i - 1]
+                let curr = seg[i]
+                let p1 = CLLocation(latitude: prev[1], longitude: prev[0])
+                let p2 = CLLocation(latitude: curr[1], longitude: curr[0])
+                totalMeters += p1.distance(from: p2)
+                if prev.count > 2 && curr.count > 2 {
+                    let delta = curr[2] - prev[2]
+                    if delta > 0 { totalAscentMeters += delta }
+                }
+            }
+        }
+        return (totalMeters, totalAscentMeters)
+    }
+    
+    // State for the export format selection
+    @State private var selectedRouteExportFormat = "geoJSON"
+    @State private var selectedPOIExportFormat = "JSON"
     
     var body: some View {
         NavigationView {
@@ -34,9 +79,128 @@ struct SavedDataView: View {
                 .pickerStyle(.segmented)
                 .padding()
                 
+                // Export format selection
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Export Format")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .padding(.horizontal)
+                    
+                    if selectedTab == 0 {
+                        // Routes export formats
+                        Menu {
+                            Button(action: {
+                                selectedRouteExportFormat = "geoJSON"
+                            }) {
+                                HStack {
+                                    Text("geoJSON")
+                                    if selectedRouteExportFormat == "geoJSON" {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                            }
+                            
+                            Button("GPX") {
+                                selectedRouteExportFormat = "GPX"
+                            }
+                            .disabled(true)
+                            
+                            Button("KML") {
+                                selectedRouteExportFormat = "KML"
+                            }
+                            .disabled(true)
+                            
+                            Button("TCX") {
+                                selectedRouteExportFormat = "TCX"
+                            }
+                            .disabled(true)
+                            
+                            Button("FIT") {
+                                selectedRouteExportFormat = "FIT"
+                            }
+                            .disabled(true)
+                        } label: {
+                            HStack {
+                                Text(selectedRouteExportFormat)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .cornerRadius(10)
+                        }
+                        .padding(.horizontal)
+                    } else {
+                        // POIs export formats
+                        Menu {
+                            Button(action: {
+                                selectedPOIExportFormat = "JSON"
+                            }) {
+                                HStack {
+                                    Text("JSON")
+                                    if selectedPOIExportFormat == "JSON" {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                            }
+                            
+                            Button("CSV") {
+                                selectedPOIExportFormat = "CSV"
+                            }
+                            .disabled(true)
+                            
+                            Button("KML") {
+                                selectedPOIExportFormat = "KML"
+                            }
+                            .disabled(true)
+                            
+                            Button("geoJSON") {
+                                selectedPOIExportFormat = "geoJSON"
+                            }
+                            .disabled(true)
+                            
+                            Button("Shapefile") {
+                                selectedPOIExportFormat = "Shapefile"
+                            }
+                            .disabled(true)
+                        } label: {
+                            HStack {
+                                Text(selectedPOIExportFormat)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding()
+                            .background(Color(.systemGray6))
+                            .cornerRadius(10)
+                        }
+                        .padding(.horizontal)
+                        .onAppear {
+                            // Ensure the initial value is properly set on first load
+                            print("[POI Menu] onAppear - current selectedPOIExportFormat: '\(selectedPOIExportFormat)'")
+                            if selectedPOIExportFormat.isEmpty {
+                                selectedPOIExportFormat = "JSON"
+                                print("[POI Menu] Set selectedPOIExportFormat to JSON")
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+                
                 if selectedTab == 0 {
                     RoutesListView(
                         dataManager: dataManager,
+                        selectedExportFormat: selectedRouteExportFormat,
                         onExportFile: { route in
                             routeToShare = route
                         },
@@ -47,7 +211,7 @@ struct SavedDataView: View {
                         }
                     )
                 } else {
-                    POIsListView(dataManager: dataManager, onExport: { exportPOIs() })
+                    POIsListView(dataManager: dataManager, selectedExportFormat: selectedPOIExportFormat)
                         .id(dataManager.savedPOIs.count)
                 }
             }
@@ -60,55 +224,41 @@ struct SavedDataView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingShareSheet) {
-                sheetContentView()
-            }
             .sheet(item: $routeToShare) { route in
-                RouteExportShareView(route: route)
+                NavigationView {
+                    RouteExportShareView(route: route, unitsSystem: unitsSystem, exportFormat: selectedRouteExportFormat)
+                        .navigationTitle("Export Route")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") {
+                                    routeToShare = nil
+                                }
+                            }
+                        }
+                }
+                .presentationDetents([.medium, .large])
             }
             .sheet(item: $routeBeingEdited) { route in
                 RouteEditModal(route: route, name: $editedRouteName, colorName: $editedRouteColorName) { newName, newColorName in
                     updateRoute(route, newName: newName, newColorName: newColorName)
                 }
             }
-        }
-    }
-    
-    @ViewBuilder
-    private func sheetContentView() -> some View {
-        if let url = shareURL, let data = try? Data(contentsOf: url) {
-            ShareSheetItems(items: [JSONItemProviderShareItem(data: data, filename: url.lastPathComponent)])
-        } else {
-            ShareSheet(content: shareContent)
-        }
-    }
-    
-    private func exportPOIs() {
-        print("[POI Export] Button tapped")
-        let start = Date()
-        shareURL = dataManager.exportPOIsAsCustomJSONFile()
-        let elapsed = Date().timeIntervalSince(start)
-        if let url = shareURL {
-            print("[POI Export] exportPOIsAsCustomJSONFile returned URL: \(url.absoluteString)")
-            print("[POI Export] URL path exists? \(FileManager.default.fileExists(atPath: url.path))")
-            do {
-                let resourceValues = try url.resourceValues(forKeys: [.isUbiquitousItemKey, .isRegularFileKey, .isDirectoryKey])
-                print("[POI Export] isUbiquitousItem: \(String(describing: resourceValues.isUbiquitousItem))")
-                print("[POI Export] isDirectory: \(String(describing: resourceValues.isDirectory))  isRegularFile: \(String(describing: resourceValues.isRegularFile))")
-            } catch {
-                print("[POI Export] Failed reading resource values for URL: \(error.localizedDescription)")
+            .onAppear {
+                // Debug: Ensure POI export format is set on initial load
+                print("[SavedDataView] onAppear - selectedPOIExportFormat: '\(selectedPOIExportFormat)'")
+                if selectedPOIExportFormat.isEmpty {
+                    selectedPOIExportFormat = "JSON"
+                    print("[SavedDataView] Initialized selectedPOIExportFormat to JSON")
+                }
             }
-        } else {
-            print("[POI Export] exportPOIsAsCustomJSONFile returned nil URL")
         }
-        print(String(format: "[POI Export] Elapsed: %.3fs", elapsed))
-        shareContent = "" // not used when URL is present
-        showingShareSheet = true
     }
 }
 
 struct RoutesListView: View {
     @ObservedObject var dataManager: DataManager
+    let selectedExportFormat: String
     let onExportFile: (TrailRoute) -> Void
     let onTap: (TrailRoute) -> Void
     
@@ -123,6 +273,7 @@ struct RoutesListView: View {
                 ForEach(dataManager.savedRoutes) { route in
                     RouteRowView(
                         route: route,
+                        selectedExportFormat: selectedExportFormat,
                         onExportFile: { r in
                             onExportFile(r)
                         },
@@ -145,6 +296,7 @@ struct RoutesListView: View {
 
 struct RouteRowView: View {
     let route: TrailRoute
+    let selectedExportFormat: String
     let onExportFile: (TrailRoute) -> Void
     let onTap: (TrailRoute) -> Void
     
@@ -209,7 +361,16 @@ struct RouteRowView: View {
         .onTapGesture { onTap(route) }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
-                onExportFile(route)
+                // Check if the selected format is supported
+                let normalizedFormat = selectedExportFormat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if normalizedFormat == "geojson" {
+                    onExportFile(route)
+                } else {
+                    // For now, show an alert or just proceed with geoJSON as fallback
+                    // In the future, this will support other formats
+                    print("[Route Export] Format '\(selectedExportFormat)' not yet supported, using geoJSON")
+                    onExportFile(route)
+                }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }.tint(.blue)
@@ -217,16 +378,20 @@ struct RouteRowView: View {
     }
 }
 
+struct POIShareData: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct POIsListView: View {
     @ObservedObject var dataManager: DataManager
-    let onExport: () -> Void
+    let selectedExportFormat: String
     
     @State private var showClearConfirm = false
     @State private var saveResultMessage: String? = nil
     @State private var showSaveResultAlert = false
     
-    @State private var lastSavedPOIURL: URL? = nil
-    @State private var showRevealSheet = false
+    @State private var poiShareData: POIShareData? = nil
     
     var body: some View {
         VStack {
@@ -260,14 +425,37 @@ struct POIsListView: View {
                 
                 Button(action: {
                     print("[Export] Export Data tapped")
-                    if let url = dataManager.exportPOIsAsCustomJSONFile() {
-                        lastSavedPOIURL = url
-                        print("[Export] Generated file URL: \(url.absoluteString)")
-                        showRevealSheet = true
+                    print("[Export] Selected format: '\(selectedExportFormat)' (length: \(selectedExportFormat.count))")
+                    print("[Export] Number of POIs to export: \(dataManager.savedPOIs.count)")
+                    
+                    if dataManager.savedPOIs.isEmpty {
+                        saveResultMessage = "No POIs to export. Add some POIs first."
+                        showSaveResultAlert = true
+                        return
+                    }
+                    
+                    // For now, only JSON is supported - normalize the format string for comparison
+                    let normalizedFormat = selectedExportFormat.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                    print("[Export] Normalized format: '\(normalizedFormat)'")
+                    
+                    if normalizedFormat == "JSON" {
+                        print("[Export] Format check passed, calling exportPOIsAsCustomJSONFile()")
+                        if let url = dataManager.exportPOIsAsCustomJSONFile() {
+                            print("[Export] Generated file URL: \(url.absoluteString)")
+                            print("[Export] File exists: \(FileManager.default.fileExists(atPath: url.path))")
+                            
+                            // Create share data and trigger sheet
+                            poiShareData = POIShareData(url: url)
+                            print("[Export] Set poiShareData with URL: \(url.absoluteString)")
+                        } else {
+                            print("[Export] exportPOIsAsCustomJSONFile() returned nil")
+                            saveResultMessage = "Failed to generate export file. Check console for details."
+                            showSaveResultAlert = true
+                        }
                     } else {
-                        print("[Export] Failed to generate file URL.")
-                        saveResultMessage = "Failed to generate export file."
-                        DispatchQueue.main.async { showSaveResultAlert = true }
+                        print("[Export] Format check failed: '\(normalizedFormat)' is not 'JSON'")
+                        saveResultMessage = "Export format '\(selectedExportFormat)' is not yet supported. Only JSON export is currently available."
+                        showSaveResultAlert = true
                     }
                 }) {
                     Text("Export Data")
@@ -294,13 +482,48 @@ struct POIsListView: View {
         .alert(saveResultMessage ?? "", isPresented: $showSaveResultAlert) {
             Button("OK", role: .cancel) {}
         }
-        .sheet(isPresented: $showRevealSheet) {
-            if let url = lastSavedPOIURL {
-                ShareSheetItems(items: [JSONShareItem(fileURL: url)])
-            } else {
-                Text("No file to reveal.")
-                    .padding()
+        .sheet(item: $poiShareData) { shareData in
+            NavigationView {
+                VStack(spacing: 20) {
+                    let _ = print("[Sheet] Sheet presented with shareData URL: \(shareData.url.absoluteString)")
+                    
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 50))
+                        .foregroundColor(.blue)
+                    
+                    Text("POIs Ready to Share")
+                        .font(.title2)
+                        .bold()
+                    
+                    Text(shareData.url.lastPathComponent)
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                    
+                    ShareLink(item: shareData.url) {
+                        Label("Share POIs", systemImage: "square.and.arrow.up")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding()
+                .navigationTitle("Share POIs")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") {
+                            print("[Sheet] Done button tapped, closing sheet")
+                            poiShareData = nil
+                        }
+                    }
+                }
             }
+            .presentationDetents([.medium, .large])
         }
     }
     
@@ -339,200 +562,186 @@ struct POIRowView: View {
     }
 }
 
-struct ShareSheet: UIViewControllerRepresentable {
-    let content: String
+struct ShareContentView: View {
+    let fileURL: URL?
+    let content: String?
     
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let items = [content]
-        return UIActivityViewController(activityItems: items, applicationActivities: nil)
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+        self.content = nil
     }
     
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-struct ShareSheetItems: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    init(content: String) {
+        self.fileURL = nil
+        self.content = content
     }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
-final class JSONShareItem: NSObject, UIActivityItemSource {
-    let fileURL: URL
-    init(fileURL: URL) { self.fileURL = fileURL }
-    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        return fileURL
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        return fileURL
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
-        if #available(iOS 14.0, *) {
-            return UTType.json.identifier
-        } else {
-            return "public.json"
-        }
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
-        return fileURL.lastPathComponent
-    }
-}
-
-final class JSONDataShareItem: NSObject, UIActivityItemSource {
-    let data: Data
-    let filename: String
-    init(data: Data, filename: String) { self.data = data; self.filename = filename }
-    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        return data
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        return data
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
-        if #available(iOS 14.0, *) { return UTType.json.identifier } else { return "public.json" }
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
-        return filename
-    }
-    // Provide a suggested name for some activities
-    func activityViewController(_ activityViewController: UIActivityViewController, thumbnailImageForActivityType activityType: UIActivity.ActivityType?, suggestedSize size: CGSize) -> UIImage? { nil }
-}
-
-final class JSONItemProviderShareItem: NSObject, UIActivityItemSource {
-    let data: Data
-    let filename: String
-    init(data: Data, filename: String) { self.data = data; self.filename = filename }
-    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        return NSItemProvider()
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        if #available(iOS 14.0, *) {
-            let provider = NSItemProvider(item: data as NSData, typeIdentifier: UTType.json.identifier)
-            provider.suggestedName = filename
-            return provider
-        } else {
-            let provider = NSItemProvider(item: data as NSData, typeIdentifier: "public.json")
-            provider.suggestedName = filename
-            return provider
-        }
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, dataTypeIdentifierForActivityType activityType: UIActivity.ActivityType?) -> String {
-        if #available(iOS 14.0, *) { return UTType.json.identifier } else { return "public.json" }
-    }
-    func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
-        return filename
-    }
-}
-
-struct FolderPickerView: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
-        picker.allowsMultipleSelection = false
-        picker.delegate = context.coordinator
-        return picker
-    }
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        let onPick: (URL) -> Void
-        init(onPick: @escaping (URL) -> Void) { self.onPick = onPick }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else { return }
-            onPick(url)
-        }
-    }
-}
-
-struct RouteDetailsModal: View {
-    let route: TrailRoute
-    @Environment(\.dismiss) private var dismiss
+    
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(route.name)
-                        .font(.title2).bold()
-                    // Show the export JSON for clarity
-                    let segments: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
-                    let (miles, feet) = {
-                        var totalMeters: Double = 0
-                        var totalAscentMeters: Double = 0
-                        for seg in segments {
-                            guard seg.count > 1 else { continue }
-                            for i in 1..<seg.count {
-                                let prev = seg[i - 1]
-                                let curr = seg[i]
-                                let p1 = CLLocation(latitude: prev[1], longitude: prev[0])
-                                let p2 = CLLocation(latitude: curr[1], longitude: curr[0])
-                                totalMeters += p1.distance(from: p2)
-                                if prev.count > 2 && curr.count > 2 {
-                                    let delta = curr[2] - prev[2]
-                                    if delta > 0 { totalAscentMeters += delta }
-                                }
-                            }
-                        }
-                        return (totalMeters / 1609.344, totalAscentMeters * 3.28084)
-                    }()
-                    let infoString = String(format: "Length: %.2f miles. Elevation %.0f feet.", miles, feet)
-                    let collection = route.exportGeoJSON(info: infoString)
-                    if let data = try? JSONSerialization.data(withJSONObject: collection, options: .prettyPrinted),
-                       let json = String(data: data, encoding: .utf8) {
-                        Text(json)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color(.secondarySystemBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        Text("Failed to render route JSON.")
-                            .foregroundColor(.secondary)
-                    }
+        VStack(spacing: 20) {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 50))
+                .foregroundColor(.blue)
+            
+            if let fileURL = fileURL {
+                Text("Ready to Share")
+                    .font(.title2)
+                    .bold()
+                
+                Text(fileURL.lastPathComponent)
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                
+                ShareLink(item: fileURL) {
+                    Label("Share File", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
                 }
-                .padding()
-            }
-            .navigationTitle("Route Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                .padding(.horizontal)
+                
+            } else if let content = content {
+                Text("Ready to Share")
+                    .font(.title2)
+                    .bold()
+                
+                Text("Text Content")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                
+                ShareLink(item: content) {
+                    Label("Share Text", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
             }
         }
+        .padding()
     }
 }
 
+/*
+ * RouteExportShareView - Handles route export in multiple formats
+ * 
+ * Currently supported formats:
+ * - geoJSON: Fully implemented using route.exportGeoJSON()
+ * 
+ * Formats ready for implementation:
+ * - GPX: GPS Exchange Format - needs implementation
+ * - KML: Keyhole Markup Language - needs implementation  
+ * - TCX: Training Center XML - needs implementation
+ * - FIT: Flexible and Interoperable Data Transfer - needs implementation
+ *
+ * To add a new format:
+ * 1. Add case to prepareRouteExportFile() switch statement
+ * 2. Create prepare[Format]Export() method following prepareGeoJSONExport() pattern
+ * 3. Implement format-specific generation logic
+ * 4. Set appropriate file extension and MIME type
+ */
 struct RouteExportShareView: View {
     let route: TrailRoute
+    let unitsSystem: SavedDataView.UnitsSystem
+    let exportFormat: String
 
     @State private var exportURL: URL? = nil
     @State private var exportError: String? = nil
     
     var body: some View {
-        Group {
+        VStack(spacing: 20) {
             if let url = exportURL {
-                ShareSheetItems(items: [ JSONShareItem(fileURL: url) ])
+                Image(systemName: "map")
+                    .font(.system(size: 50))
+                    .foregroundColor(.blue)
+                
+                Text("Route Ready to Share")
+                    .font(.title2)
+                    .bold()
+                
+                Text(url.lastPathComponent)
+                    .font(.headline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                
+                ShareLink(item: url) {
+                    Label("Share Route", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                
             } else if let error = exportError {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 50))
+                    .foregroundColor(.orange)
+                
+                Text("Export Failed")
+                    .font(.title2)
+                    .bold()
+                
                 Text(error)
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                    
             } else {
-                // Minimal placeholder while preparing the export
-                ProgressView("Preparing export…")
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .padding()
+                
+                Text("Preparing export…")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
             }
         }
+        .padding()
         .onAppear {
             prepareRouteExportFile()
         }
     }
     
     private func prepareRouteExportFile() {
+        let normalizedFormat = exportFormat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        
+        switch normalizedFormat {
+        case "geojson":
+            prepareGeoJSONExport()
+        case "gpx":
+            exportError = "GPX export is not yet implemented. Please use geoJSON format."
+        case "kml":
+            exportError = "KML export is not yet implemented. Please use geoJSON format."
+        case "tcx":
+            exportError = "TCX export is not yet implemented. Please use geoJSON format."
+        case "fit":
+            exportError = "FIT export is not yet implemented. Please use geoJSON format."
+        default:
+            exportError = "Unsupported export format '\(exportFormat)'. Please use geoJSON format."
+        }
+    }
+    
+    private func prepareGeoJSONExport() {
         // Build segments and compute info string
         let segments: [[[Double]]] = route.segments ?? [route.coordinates.map { [ $0.longitude, $0.latitude, $0.altitude ] }]
-        let (miles, feet) = computeDistanceMilesAndElevationFeet(from: segments)
-        let infoString = String(format: "Length: %.2f miles. Elevation gain: %.0f feet.", miles, feet)
+        let (totalMeters, totalAscentMeters) = computeDistanceAndElevation(from: segments)
+        let (distance, elevation, distanceUnit, elevationUnit) = formatDistanceAndElevation(totalMeters: totalMeters, totalAscentMeters: totalAscentMeters)
+        
+        let infoString = String(format: "Length: %.2f %@. Elevation gain: %.0f %@.", distance, distanceUnit, elevation, elevationUnit)
         let collection = route.exportGeoJSON(info: infoString)
 
         // Serialize to JSON data
         guard let data = try? JSONSerialization.data(withJSONObject: collection, options: .prettyPrinted) else {
-            exportError = "Failed to prepare export."
+            exportError = "Failed to prepare geoJSON export."
             return
         }
 
@@ -562,8 +771,21 @@ struct RouteExportShareView: View {
         }
     }
 
-    // Keep existing distance computation helper
-    private func computeDistanceMilesAndElevationFeet(from segments: [[[Double]]]) -> (Double, Double) {
+    // Helper functions for unit conversions
+    private func formatDistanceAndElevation(totalMeters: Double, totalAscentMeters: Double) -> (distance: Double, elevation: Double, distanceUnit: String, elevationUnit: String) {
+        switch unitsSystem {
+        case .imperial:
+            let miles = totalMeters / 1609.344
+            let feet = totalAscentMeters * 3.28084
+            return (miles, feet, "miles", "feet")
+        case .metric:
+            let kilometers = totalMeters / 1000.0
+            let meters = totalAscentMeters
+            return (kilometers, meters, "km", "m")
+        }
+    }
+    
+    private func computeDistanceAndElevation(from segments: [[[Double]]]) -> (totalMeters: Double, totalAscentMeters: Double) {
         var totalMeters: Double = 0
         var totalAscentMeters: Double = 0
         for seg in segments {
@@ -580,9 +802,7 @@ struct RouteExportShareView: View {
                 }
             }
         }
-        let miles = totalMeters / 1609.344
-        let feet = totalAscentMeters * 3.28084
-        return (miles, feet)
+        return (totalMeters, totalAscentMeters)
     }
 
     // Helper to sanitize a base filename (without extension)
