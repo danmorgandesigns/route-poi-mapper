@@ -16,6 +16,7 @@ struct RouteTrackingView: View {
     @State private var showingSaveDialog = false
     @State private var routeName = ""
     @State private var showingFirstPointIndicator = false
+    @State private var isSavingFinalizing = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -35,6 +36,17 @@ struct RouteTrackingView: View {
                 CurrentRouteInfoView(locationManager: locationManager)
             }
             
+            if locationManager.isFinalizingLastPoint {
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Finalizing last point…")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
+                .padding(.vertical, 4)
+            }
+            
             Spacer()
         }
         .padding()
@@ -42,7 +54,15 @@ struct RouteTrackingView: View {
             TextField("Route Name", text: $routeName)
             
             Button("Save") {
-                saveRoute()
+                isSavingFinalizing = true
+                locationManager.stopRouteTracking()
+                let name = routeName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let data = locationManager.exportCurrentRouteGeoJSON(named: name) {
+                    _ = dataManager.saveGeoJSONRouteFile(named: name, data: data)
+                }
+                isSavingFinalizing = false
+                routeName = ""
+                showingSaveDialog = false
             }
             .disabled(routeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             
@@ -51,6 +71,17 @@ struct RouteTrackingView: View {
             }
         } message: {
             Text("Enter a name for this route")
+        }
+        
+        if isSavingFinalizing {
+            HStack {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Finalizing and saving…")
+                    .font(.caption)
+                    .foregroundColor(.blue)
+            }
+            .padding(.vertical, 4)
         }
     }
     
@@ -216,6 +247,25 @@ struct TrackingControlsView: View {
                             }
                             .buttonStyle(.glass)
                             .foregroundColor(.red)
+                        } else if locationManager.isFinalizingLastPoint {
+                            Button("Pause") {
+                                // Disabled during finalizing
+                            }
+                            .buttonStyle(.glass)
+                            .disabled(true)
+                            
+                            Button("Stop Tracking") {
+                                // Disabled during finalizing
+                            }
+                            .buttonStyle(.glass)
+                            .foregroundColor(.red)
+                            .disabled(true)
+                            
+                            Button("Save Route") {
+                                // Disabled during finalizing
+                            }
+                            .buttonStyle(.glassProminent)
+                            .disabled(true)
                         } else {
                             Button("Pause") {
                                 locationManager.pauseRouteTracking()
@@ -227,12 +277,13 @@ struct TrackingControlsView: View {
                             }
                             .buttonStyle(.glass)
                             .foregroundColor(.red)
+                            .disabled(locationManager.isFinalizingLastPoint)
                             
                             Button("Save Route") {
                                 onSave()
                             }
                             .buttonStyle(.glassProminent)
-                            .disabled(locationManager.currentRoute.isEmpty)
+                            .disabled(locationManager.currentRoute.isEmpty || locationManager.isFinalizingLastPoint)
                         }
                     } else {
                         Button(action: {

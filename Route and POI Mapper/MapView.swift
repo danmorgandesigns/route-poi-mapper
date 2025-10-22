@@ -1168,6 +1168,10 @@ struct RouteNamingModal: View {
     @State private var name: String = ""
     let onSave: (String) -> Void
 
+    @AppStorage("elevationSmoothingEnabled") private var elevationSmoothingEnabled: Bool = true
+    @AppStorage("elevationSmoothingWindow") private var elevationSmoothingWindow: Int = 5
+    @AppStorage("elevationGainThresholdMeters") private var elevationGainThresholdMeters: Double = 1.0
+
     var body: some View {
         NavigationView {
             Form {
@@ -1194,12 +1198,60 @@ struct RouteNamingModal: View {
             }
         }
     }
+    
+    private func smoothElevations(_ elevs: [Double], window: Int) -> [Double] {
+        let w = max(1, window)
+        guard w > 1, elevs.count >= w else { return elevs }
+        var out = elevs
+        let k = w / 2
+        for i in k..<(elevs.count - k) {
+            let slice = elevs[(i - k)...(i + k)]
+            out[i] = slice.reduce(0, +) / Double(slice.count)
+        }
+        return out
+    }
+    
+    func computeDistanceMilesAndElevationFeet(from segments: [[[Double]]]) -> (Double, Double) {
+        var totalMeters: Double = 0
+        var totalAscentMeters: Double = 0
+        
+        for seg in segments {
+            guard seg.count > 1 else { continue }
+            // Extract elevations with fallback to 0.0
+            let elevations = seg.map { $0.count > 2 ? $0[2] : 0.0 }
+            var smoothedElevations = elevations
+            
+            if elevationSmoothingEnabled && elevationSmoothingWindow >= 3 {
+                let window = elevationSmoothingWindow % 2 == 1 ? elevationSmoothingWindow : elevationSmoothingWindow + 1
+                smoothedElevations = smoothElevations(elevations, window: window)
+            }
+            
+            for i in 1..<seg.count {
+                let prev = seg[i - 1]
+                let curr = seg[i]
+                let p1 = CLLocation(latitude: prev[1], longitude: prev[0])
+                let p2 = CLLocation(latitude: curr[1], longitude: curr[0])
+                totalMeters += p1.distance(from: p2)
+                
+                let deltaElev = smoothedElevations[i] - smoothedElevations[i - 1]
+                if deltaElev > elevationGainThresholdMeters {
+                    totalAscentMeters += deltaElev
+                }
+            }
+        }
+        
+        let miles = totalMeters / 1609.344
+        let feet = totalAscentMeters * 3.28084
+        return (miles, feet)
+    }
 }
 
-#Preview {
-    MapView(
-        locationManager: LocationManager(),
-        dataManager: DataManager()
-    )
+//#Preview {
+struct MapView_Previews: PreviewProvider {
+    static var previews: some View {
+        MapView(
+            locationManager: LocationManager(),
+            dataManager: DataManager()
+        )
+    }
 }
-

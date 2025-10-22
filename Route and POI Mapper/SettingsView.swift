@@ -4,7 +4,10 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("routePrecisionMeters") private var routePrecisionMeters: Double = 5.0
     @AppStorage("updateFrequencyMeters") private var updateFrequencyMeters: Double = 10.0
-    
+    @AppStorage("elevationSmoothingEnabled") private var elevationSmoothingEnabled: Bool = true
+    @AppStorage("elevationSmoothingWindow") private var elevationSmoothingWindow: Int = 5
+    @AppStorage("elevationGainThresholdMeters") private var elevationGainThresholdMeters: Double = 1.0
+
     enum UnitsSystem: String, CaseIterable, Identifiable {
         case imperial = "imperial"
         case metric = "metric"
@@ -35,6 +38,9 @@ struct SettingsView: View {
     private func resetToDefaults() {
         routePrecisionMeters = SettingsView.defaultRoutePrecisionMeters
         updateFrequencyMeters = SettingsView.defaultUpdateFrequencyMeters
+        elevationSmoothingEnabled = true
+        elevationSmoothingWindow = 5
+        elevationGainThresholdMeters = 1.0
     }
 
     var body: some View {
@@ -60,6 +66,51 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                     Slider(value: $updateFrequencyMeters, in: 2...50, step: 1)
+                }
+                
+                Section(header: Text("Elevation")) {
+                    Toggle("Elevation Smoothing", isOn: $elevationSmoothingEnabled)
+                    
+                    HStack {
+                        Text("Smoothing Window")
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Text("\(elevationSmoothingWindow)")
+                            .foregroundColor(.secondary)
+                        Stepper("", value: $elevationSmoothingWindow, in: 3...9, step: 1)
+                            .onChange(of: elevationSmoothingWindow) { newValue in
+                                var value = newValue
+                                if value < 3 {
+                                    value = 3
+                                } else if value > 9 {
+                                    value = 9
+                                }
+                                if value % 2 == 0 {
+                                    value += 1
+                                    if value > 9 {
+                                        value = 9
+                                    }
+                                }
+                                if value != elevationSmoothingWindow {
+                                    elevationSmoothingWindow = value
+                                }
+                            }
+                    }
+                    Text("Controls the size of the window used to smooth elevation data. Larger windows provide smoother results but may delay changes.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    
+                    HStack {
+                        Text("Ascent Threshold")
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Text("\(Int(elevationGainThresholdMeters)) m")
+                            .foregroundColor(.secondary)
+                    }
+                    Slider(value: $elevationGainThresholdMeters, in: 0.0...3.0, step: 0.1)
+                    Text("Minimum elevation gain required to count as ascent, helping to filter out noise and small fluctuations.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
                 
                 Section {

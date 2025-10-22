@@ -18,6 +18,7 @@ class LocationManager: NSObject, ObservableObject {
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var isTracking = false
     @Published var isPaused = false
+    @Published var isFinalizingLastPoint: Bool = false
     
     // Route tracking
     @Published var currentRoute: [TrailCoordinate] = []
@@ -26,6 +27,13 @@ class LocationManager: NSObject, ObservableObject {
     @Published var routeStartTime: Date?
     private var hasRecordedFirstPoint = false
     private var forceFirstPointOnResume = false
+    
+    // Buffer for recent samples used for final fix fallback
+    private var recentSamples: [CLLocation] = []
+    private let recentBufferMax = 10
+    
+    // Temporary sample handler for captureFinalFix
+    private var onTemporarySample: ((CLLocation) -> Void)? = nil
     
     // Error handling
     @Published var errorMessage: String?
@@ -134,22 +142,28 @@ class LocationManager: NSObject, ObservableObject {
     func pauseRouteTracking() {
         guard isTracking, !isPaused else { return }
         isPaused = true
+        isFinalizingLastPoint = true
         
-        // Immediately capture a last point on pause if we have a valid recent fix
-        if let loc = location,
-           loc.horizontalAccuracy > 0,
-           abs(loc.timestamp.timeIntervalSinceNow) > -15 { // within last 15 seconds
-            let lon = loc.coordinate.longitude
-            let lat = loc.coordinate.latitude
-            let elev = loc.altitude
-            if currentSegment.last.map({ $0[0] != lon || $0[1] != lat }) ?? true {
-                currentSegment.append([lon, lat, elev])
+        Task {
+            let finalFix = await captureFinalFix(timeout: 3, minAccuracy: routePrecisionMeters)
+            
+            if let loc = finalFix {
+                await MainActor.run(body: {
+                    appendIfNotDuplicate(loc)
+                })
+            } else if let recentLoc = await MainActor.run(resultType: CLLocation?.self, body: { bestRecentSample(minAccuracy: routePrecisionMeters) }) {
+                await MainActor.run(body: {
+                    appendIfNotDuplicate(recentLoc)
+                })
             }
-        }
-        
-        if !currentSegment.isEmpty {
-            currentSegments.append(currentSegment)
-            currentSegment.removeAll()
+            
+            await MainActor.run {
+                if !currentSegment.isEmpty {
+                    currentSegments.append(currentSegment)
+                    currentSegment.removeAll()
+                }
+                isFinalizingLastPoint = false
+            }
         }
     }
     
@@ -180,32 +194,35 @@ class LocationManager: NSObject, ObservableObject {
     }
     
     func stopRouteTracking() {
-        // Immediately capture a last point on stop if we have a valid recent fix
-        if let loc = location,
-           loc.horizontalAccuracy > 0,
-           abs(loc.timestamp.timeIntervalSinceNow) > -15 { // within last 15 seconds
-            let lon = loc.coordinate.longitude
-            let lat = loc.coordinate.latitude
-            let elev = loc.altitude
-            if currentSegment.last.map({ $0[0] != lon || $0[1] != lat }) ?? true {
-                currentSegment.append([lon, lat, elev])
+        isFinalizingLastPoint = true
+        
+        Task {
+            let finalFix = await captureFinalFix(timeout: 3, minAccuracy: routePrecisionMeters)
+            
+            await MainActor.run {
+                if let loc = finalFix {
+                    appendIfNotDuplicate(loc)
+                } else if let recentLoc = bestRecentSample(minAccuracy: routePrecisionMeters) {
+                    appendIfNotDuplicate(recentLoc)
+                }
+                
+                isTracking = false
+                isPaused = false
+                hasRecordedFirstPoint = false
+                if !currentSegment.isEmpty {
+                    currentSegments.append(currentSegment)
+                    currentSegment.removeAll()
+                }
+                
+                // When not actively tracking, relax accuracy to reduce impact (fixed idle distance filter)
+                locationManager.activityType = .other
+                locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+                locationManager.distanceFilter = 10
+                
+                // Keep updating location so the blue dot and recentering remain functional
+                isFinalizingLastPoint = false
             }
         }
-        
-        isTracking = false
-        isPaused = false
-        hasRecordedFirstPoint = false
-        if !currentSegment.isEmpty {
-            currentSegments.append(currentSegment)
-            currentSegment.removeAll()
-        }
-        
-        // When not actively tracking, relax accuracy to reduce impact (fixed idle distance filter)
-        locationManager.activityType = .other
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = 10
-        
-        // Keep updating location so the blue dot and recentering remain functional
     }
     
     func getCurrentLocation() -> CLLocation? {
@@ -244,74 +261,137 @@ class LocationManager: NSObject, ObservableObject {
             return nil
         }
     }
+    
+    private func appendIfNotDuplicate(_ loc: CLLocation) {
+        let lon = loc.coordinate.longitude
+        let lat = loc.coordinate.latitude
+        let elev = loc.altitude
+        if currentSegment.last.map({ $0[0] != lon || $0[1] != lat }) ?? true {
+            currentSegment.append([lon, lat, elev])
+        }
+    }
+    
+    private func bestRecentSample(minAccuracy: CLLocationAccuracy, maxAge: TimeInterval = 10) -> CLLocation? {
+        let now = Date()
+        let validSamples = recentSamples.filter {
+            $0.horizontalAccuracy > 0 &&
+            $0.horizontalAccuracy <= minAccuracy &&
+            now.timeIntervalSince($0.timestamp) <= maxAge
+        }
+        return validSamples.min(by: { $0.horizontalAccuracy < $1.horizontalAccuracy })
+    }
+    
+    @MainActor func captureFinalFix(timeout: TimeInterval = 3.0, minAccuracy: CLLocationAccuracy) async -> CLLocation? {
+        return await withCheckedContinuation { (continuation: CheckedContinuation<CLLocation?, Never>) in
+            let originalDesiredAccuracy = locationManager.desiredAccuracy
+            let originalDistanceFilter = locationManager.distanceFilter
+            var bestLocation: CLLocation?
+            var didResume = false
+
+            func resumeOnce(_ location: CLLocation?) {
+                Task { @MainActor in
+                    guard !didResume else { return }
+                    didResume = true
+                    onTemporarySample = nil
+                    locationManager.desiredAccuracy = originalDesiredAccuracy
+                    locationManager.distanceFilter = originalDistanceFilter
+                    if !isTracking { locationManager.stopUpdatingLocation() }
+                    continuation.resume(returning: location)
+                }
+            }
+
+            onTemporarySample = { location in
+                guard location.horizontalAccuracy > 0 else { return }
+                if bestLocation == nil || location.horizontalAccuracy < (bestLocation?.horizontalAccuracy ?? .greatestFiniteMagnitude) {
+                    bestLocation = location
+                }
+                if location.horizontalAccuracy <= minAccuracy {
+                    resumeOnce(location)
+                }
+            }
+
+            locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+            locationManager.distanceFilter = kCLDistanceFilterNone
+            locationManager.startUpdatingLocation()
+
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                resumeOnce(bestLocation)
+            }
+        }
+    }
 }
 
+@MainActor
 extension LocationManager: CLLocationManagerDelegate {
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        Task { @MainActor in
-            guard let location = locations.last else { return }
-            
-            // Allow an initial fix; still ignore invalid readings
-            guard location.horizontalAccuracy > 0 else { return }
-            
-            // Log altitude info for debugging
-            print("Location update - Lat: \(location.coordinate.latitude), Lng: \(location.coordinate.longitude), Alt: \(location.altitude), VerticalAccuracy: \(location.verticalAccuracy)")
-            
-            self.location = location
-            
-            if isTracking {
-                let trailCoordinate = TrailCoordinate(from: location)
-                currentRoute.append(trailCoordinate)
-                if !isPaused {
-                    let lon = location.coordinate.longitude
-                    let lat = location.coordinate.latitude
-                    let elev = location.altitude
-                    
-                    // Append points with robust rules: first of route, first after resume, then precision-filtered
-                    if forceFirstPointOnResume {
-                        currentSegment.append([lon, lat, elev])
-                        forceFirstPointOnResume = false
-                        hasRecordedFirstPoint = true
-                    } else if !hasRecordedFirstPoint {
-                        currentSegment.append([lon, lat, elev])
-                        hasRecordedFirstPoint = true
-                    } else if let last = currentSegment.last {
-                        let lastLoc = CLLocation(latitude: last[1], longitude: last[0])
-                        let dist = lastLoc.distance(from: location)
-                        if dist > routePrecisionMeters {
-                            currentSegment.append([lon, lat, elev])
-                        }
-                    } else {
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        
+        // Allow an initial fix; still ignore invalid readings
+        guard location.horizontalAccuracy > 0 else { return }
+        
+        // Log altitude info for debugging
+        print("Location update - Lat: \(location.coordinate.latitude), Lng: \(location.coordinate.longitude), Alt: \(location.altitude), VerticalAccuracy: \(location.verticalAccuracy)")
+        
+        self.location = location
+        
+        recentSamples.append(location)
+        if recentSamples.count > recentBufferMax {
+            recentSamples.removeFirst()
+        }
+        
+        if let handler = onTemporarySample {
+            handler(location)
+        }
+        
+        if isTracking {
+            let trailCoordinate = TrailCoordinate(from: location)
+            currentRoute.append(trailCoordinate)
+            if !isPaused {
+                let lon = location.coordinate.longitude
+                let lat = location.coordinate.latitude
+                let elev = location.altitude
+                
+                // Append points with robust rules: first of route, first after resume, then precision-filtered
+                if forceFirstPointOnResume {
+                    currentSegment.append([lon, lat, elev])
+                    forceFirstPointOnResume = false
+                    hasRecordedFirstPoint = true
+                } else if !hasRecordedFirstPoint {
+                    currentSegment.append([lon, lat, elev])
+                    hasRecordedFirstPoint = true
+                } else if let last = currentSegment.last {
+                    let lastLoc = CLLocation(latitude: last[1], longitude: last[0])
+                    let dist = lastLoc.distance(from: location)
+                    if dist > routePrecisionMeters {
                         currentSegment.append([lon, lat, elev])
                     }
+                } else {
+                    currentSegment.append([lon, lat, elev])
                 }
             }
         }
     }
     
-    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        Task { @MainActor in
-            errorMessage = "Location error: \(error.localizedDescription)"
-        }
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        errorMessage = "Location error: \(error.localizedDescription)"
     }
     
-    nonisolated func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
-        Task { @MainActor in
-            authorizationStatus = status
-            
-            switch status {
-            case .denied, .restricted:
-                errorMessage = "Location access denied. Please enable in Settings."
-            case .notDetermined:
-                break
-            case .authorizedWhenInUse, .authorizedAlways:
-                errorMessage = nil
-                manager.allowsBackgroundLocationUpdates = true
-                manager.pausesLocationUpdatesAutomatically = false
-                manager.startUpdatingLocation()
-            @unknown default:
-                break
-            }
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        authorizationStatus = status
+        
+        switch status {
+        case .denied, .restricted:
+            errorMessage = "Location access denied. Please enable in Settings."
+        case .notDetermined:
+            break
+        case .authorizedWhenInUse, .authorizedAlways:
+            errorMessage = nil
+            manager.allowsBackgroundLocationUpdates = true
+            manager.pausesLocationUpdatesAutomatically = false
+            manager.startUpdatingLocation()
+        @unknown default:
+            break
         }
     }
 }
