@@ -25,6 +25,7 @@ class LocationManager: NSObject, ObservableObject {
     private var currentSegment: [[Double]] = []
     @Published var routeStartTime: Date?
     private var hasRecordedFirstPoint = false
+    private var forceFirstPointOnResume = false
     
     // Error handling
     @Published var errorMessage: String?
@@ -80,8 +81,10 @@ class LocationManager: NSObject, ObservableObject {
         isTracking = true
         hasRecordedFirstPoint = false
         
-        // Record the current location immediately if available
-        if let currentLocation = location {
+        // Record the current location immediately if available, accurate, and recent
+        if let currentLocation = location,
+           currentLocation.horizontalAccuracy > 0,
+           abs(currentLocation.timestamp.timeIntervalSinceNow) > -15 { // within last 15 seconds
             let trailCoordinate = TrailCoordinate(from: currentLocation)
             currentRoute.append(trailCoordinate)
             let lon = currentLocation.coordinate.longitude
@@ -131,6 +134,19 @@ class LocationManager: NSObject, ObservableObject {
     func pauseRouteTracking() {
         guard isTracking, !isPaused else { return }
         isPaused = true
+        
+        // Immediately capture a last point on pause if we have a valid recent fix
+        if let loc = location,
+           loc.horizontalAccuracy > 0,
+           abs(loc.timestamp.timeIntervalSinceNow) > -15 { // within last 15 seconds
+            let lon = loc.coordinate.longitude
+            let lat = loc.coordinate.latitude
+            let elev = loc.altitude
+            if currentSegment.last.map({ $0[0] != lon || $0[1] != lat }) ?? true {
+                currentSegment.append([lon, lat, elev])
+            }
+        }
+        
         if !currentSegment.isEmpty {
             currentSegments.append(currentSegment)
             currentSegment.removeAll()
@@ -146,9 +162,36 @@ class LocationManager: NSObject, ObservableObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.distanceFilter = updateFrequencyMeters
         locationManager.pausesLocationUpdatesAutomatically = false
+        
+        // Force the first point of the new segment and request an immediate fix
+        forceFirstPointOnResume = true
+        locationManager.distanceFilter = 0
+        locationManager.startUpdatingLocation()
+        locationManager.requestLocation()
+        // Restore distance filter shortly after to user preference
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await MainActor.run {
+                if isTracking && !isPaused {
+                    locationManager.distanceFilter = updateFrequencyMeters
+                }
+            }
+        }
     }
     
     func stopRouteTracking() {
+        // Immediately capture a last point on stop if we have a valid recent fix
+        if let loc = location,
+           loc.horizontalAccuracy > 0,
+           abs(loc.timestamp.timeIntervalSinceNow) > -15 { // within last 15 seconds
+            let lon = loc.coordinate.longitude
+            let lat = loc.coordinate.latitude
+            let elev = loc.altitude
+            if currentSegment.last.map({ $0[0] != lon || $0[1] != lat }) ?? true {
+                currentSegment.append([lon, lat, elev])
+            }
+        }
+        
         isTracking = false
         isPaused = false
         hasRecordedFirstPoint = false
@@ -224,20 +267,21 @@ extension LocationManager: CLLocationManagerDelegate {
                     let lat = location.coordinate.latitude
                     let elev = location.altitude
                     
-                    // Always record the first point regardless of precision thresholds
-                    if !hasRecordedFirstPoint {
+                    // Append points with robust rules: first of route, first after resume, then precision-filtered
+                    if forceFirstPointOnResume {
+                        currentSegment.append([lon, lat, elev])
+                        forceFirstPointOnResume = false
+                        hasRecordedFirstPoint = true
+                    } else if !hasRecordedFirstPoint {
                         currentSegment.append([lon, lat, elev])
                         hasRecordedFirstPoint = true
                     } else if let last = currentSegment.last {
-                        // Apply precision filtering for subsequent points
-                        let dLon = lon - last[0]
-                        let dLat = lat - last[1]
-                        let approxMeters = sqrt(dLon*dLon + dLat*dLat) * 111_000.0
-                        if approxMeters > routePrecisionMeters {
+                        let lastLoc = CLLocation(latitude: last[1], longitude: last[0])
+                        let dist = lastLoc.distance(from: location)
+                        if dist > routePrecisionMeters {
                             currentSegment.append([lon, lat, elev])
                         }
                     } else {
-                        // Fallback: if somehow we don't have a last point, add this one
                         currentSegment.append([lon, lat, elev])
                     }
                 }
