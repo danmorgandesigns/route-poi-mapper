@@ -206,7 +206,7 @@ struct SavedDataView: View {
                         },
                         onTap: { route in
                             editedRouteName = route.name
-                            editedRouteColorName = dataManagerColorName(for: route)
+                            editedRouteColorName = dataManagerColorName(for: route).lowercased()
                             routeBeingEdited = route
                         }
                     )
@@ -318,13 +318,14 @@ struct RouteRowView: View {
         case "blue": return .blue
         case "brown": return .brown
         case "cyan": return .cyan
-        case "gray", "grey": return .gray
+        case "gray": return .gray
         case "green": return .green
         case "indigo": return .indigo
         case "mint": return .mint
         case "orange": return .orange
         case "pink": return .pink
         case "purple": return .purple
+        case "red": return .red
         case "teal": return .teal
         case "white": return .white
         case "yellow": return .yellow
@@ -836,7 +837,7 @@ fileprivate extension DateFormatter {
 
 extension SavedDataView {
     private func colorOptions() -> [String] {
-        ["black","blue","brown","cyan","gray","grey","green","indigo","mint","orange","pink","purple","teal","white","yellow"]
+        ["black","blue","brown","cyan","gray","green","indigo","mint","orange","pink","purple","red","teal","white","yellow"]
     }
     
     private func swiftUIColor(for name: String) -> Color {
@@ -846,13 +847,13 @@ extension SavedDataView {
         case "brown": return .brown
         case "cyan": return .cyan
         case "gray": return .gray
-        case "grey": return .gray
         case "green": return .green
         case "indigo": return .indigo
         case "mint": return .mint
         case "orange": return .orange
         case "pink": return .pink
         case "purple": return .purple
+        case "red": return .red
         case "teal": return .teal
         case "white": return .white
         case "yellow": return .yellow
@@ -861,7 +862,7 @@ extension SavedDataView {
     }
     
     private func dataManagerColorName(for route: TrailRoute) -> String {
-        route.colorName ?? "blue"
+        (route.colorName ?? "blue").lowercased()
     }
     
     private func storeColorName(_ name: String, for route: TrailRoute) {
@@ -870,7 +871,8 @@ extension SavedDataView {
     }
     
     private func updateRoute(_ route: TrailRoute, newName: String, newColorName: String) {
-        let updatedRoute = TrailRoute(id: route.id, name: newName, startTime: route.startTime, endTime: route.endTime, coordinates: route.coordinates, segments: route.segments, colorName: newColorName)
+        let normalizedColorName = newColorName.lowercased()
+        let updatedRoute = TrailRoute(id: route.id, name: newName, startTime: route.startTime, endTime: route.endTime, coordinates: route.coordinates, segments: route.segments, colorName: normalizedColorName)
         dataManager.updateRoute(updatedRoute)
     }
 }
@@ -924,7 +926,7 @@ struct RouteEditModal: View {
     }
     
     private func colorOptions() -> [String] {
-        ["black","blue","brown","cyan","gray","grey","green","indigo","mint","orange","pink","purple","teal","white","yellow"]
+        ["black","blue","brown","cyan","gray","green","indigo","mint","orange","pink","purple","red","teal","white","yellow"]
     }
     
     private func swiftUIColor(for name: String) -> Color {
@@ -934,13 +936,13 @@ struct RouteEditModal: View {
         case "brown": return .brown
         case "cyan": return .cyan
         case "gray": return .gray
-        case "grey": return .gray
         case "green": return .green
         case "indigo": return .indigo
         case "mint": return .mint
         case "orange": return .orange
         case "pink": return .pink
         case "purple": return .purple
+        case "red": return .red
         case "teal": return .teal
         case "white": return .white
         case "yellow": return .yellow

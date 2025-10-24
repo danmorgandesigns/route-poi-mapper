@@ -171,22 +171,24 @@ class LocationManager: NSObject, ObservableObject {
         guard isTracking, isPaused else { return }
         isPaused = false
         
-        // Restore high-accuracy settings for active tracking using user-configured frequency
+        // Force the first point of the new segment - ensure we get a fresh location
+        forceFirstPointOnResume = true
+        
+        // Configure for immediate, high-accuracy location acquisition
         locationManager.activityType = .fitness
-        locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        locationManager.distanceFilter = updateFrequencyMeters
+        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        locationManager.distanceFilter = kCLDistanceFilterNone // No filtering for immediate response
         locationManager.pausesLocationUpdatesAutomatically = false
         
-        // Force the first point of the new segment and request an immediate fix
-        forceFirstPointOnResume = true
-        locationManager.distanceFilter = 0
+        // Start updates immediately - don't use requestLocation() as it can conflict
         locationManager.startUpdatingLocation()
-        locationManager.requestLocation()
-        // Restore distance filter shortly after to user preference
+        
+        // Restore user's preferred distance filter after brief delay to ensure first point is captured
         Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // Reduced to 1 second
             await MainActor.run {
                 if isTracking && !isPaused {
+                    locationManager.desiredAccuracy = kCLLocationAccuracyBest
                     locationManager.distanceFilter = updateFrequencyMeters
                 }
             }
@@ -354,6 +356,8 @@ extension LocationManager: CLLocationManagerDelegate {
                 
                 // Append points with robust rules: first of route, first after resume, then precision-filtered
                 if forceFirstPointOnResume {
+                    // Accept the first location after resume regardless of accuracy to avoid delays
+                    // The user has moved since pause, so we need a fresh point
                     currentSegment.append([lon, lat, elev])
                     forceFirstPointOnResume = false
                     hasRecordedFirstPoint = true
