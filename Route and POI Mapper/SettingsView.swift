@@ -1,12 +1,15 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject var dataManager: DataManager
     @Environment(\.dismiss) private var dismiss
     @AppStorage("routePrecisionMeters") private var routePrecisionMeters: Double = 5.0
     @AppStorage("updateFrequencyMeters") private var updateFrequencyMeters: Double = 10.0
     @AppStorage("elevationSmoothingEnabled") private var elevationSmoothingEnabled: Bool = true
-    @AppStorage("elevationSmoothingWindow") private var elevationSmoothingWindow: Int = 5
-    @AppStorage("elevationGainThresholdMeters") private var elevationGainThresholdMeters: Double = 1.0
+    @AppStorage("elevationSmoothingWindow") private var elevationSmoothingWindow: Int = 7
+    @AppStorage("elevationGainThresholdMeters") private var elevationGainThresholdMeters: Double = 0.5
+    
+    @State private var showingCategoryCustomization = false
 
     enum UnitsSystem: String, CaseIterable, Identifiable {
         case imperial = "imperial"
@@ -34,18 +37,36 @@ struct SettingsView: View {
     
     private static let defaultRoutePrecisionMeters: Double = 5.0
     private static let defaultUpdateFrequencyMeters: Double = 10.0
+    private static let defaultElevationSmoothingWindow: Int = 7
+    private static let defaultElevationGainThresholdMeters: Double = 0.5
     
     private func resetToDefaults() {
         routePrecisionMeters = SettingsView.defaultRoutePrecisionMeters
         updateFrequencyMeters = SettingsView.defaultUpdateFrequencyMeters
         elevationSmoothingEnabled = true
-        elevationSmoothingWindow = 5
-        elevationGainThresholdMeters = 1.0
+        elevationSmoothingWindow = SettingsView.defaultElevationSmoothingWindow
+        elevationGainThresholdMeters = SettingsView.defaultElevationGainThresholdMeters
     }
 
     var body: some View {
         NavigationView {
             Form {
+                Section(footer: Text("Manage categories for organizing your Points of Interest.")) {
+                    Button(action: {
+                        showingCategoryCustomization = true
+                    }) {
+                        Text("Customize Categories")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(Color.blue)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .listRowBackground(Color.clear)
+                }
+                
                 Section(footer: Text("Minimum spacing between points in your saved route geometry. Larger values reduce file size but may look less smooth.")) {
                     HStack {
                         Text("Route Precision")
@@ -107,8 +128,8 @@ struct SettingsView: View {
                         Text("\(Int(elevationGainThresholdMeters)) m")
                             .foregroundColor(.secondary)
                     }
-                    Slider(value: $elevationGainThresholdMeters, in: 0.0...3.0, step: 0.1)
-                    Text("Minimum elevation gain required to count as ascent, helping to filter out noise and small fluctuations.")
+                    Slider(value: $elevationGainThresholdMeters, in: 0.0...5.0, step: 0.1)
+                    Text("Minimum elevation gain required to count as ascent. Higher values (2-3m) help filter out GPS noise for more accurate elevation calculations.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
@@ -152,9 +173,12 @@ struct SettingsView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingCategoryCustomization) {
+            CategoryCustomizationView(dataManager: dataManager)
+        }
     }
 }
 
 #Preview {
-    SettingsView()
+    SettingsView(dataManager: DataManager())
 }

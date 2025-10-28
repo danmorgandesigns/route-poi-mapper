@@ -231,6 +231,98 @@ class LocationManager: NSObject, ObservableObject {
         return location
     }
     
+    // MARK: - POI Location Capture
+    
+    /// Check if current location is accurate enough for POI use
+    @MainActor
+    func isCurrentLocationSuitableForPOI(maxAccuracy: CLLocationAccuracy = 10.0, maxAge: TimeInterval = 30.0) -> Bool {
+        guard let location = location else { return false }
+        return location.horizontalAccuracy > 0 && 
+               location.horizontalAccuracy <= maxAccuracy && 
+               abs(location.timestamp.timeIntervalSinceNow) < maxAge
+    }
+    
+    /// Captures a high-precision location specifically optimized for POI recording
+    /// This method temporarily configures the location manager for maximum accuracy
+    /// and waits for a precise fix before returning
+    @MainActor
+    func captureHighPrecisionLocationForPOI(timeout: TimeInterval = 10.0, targetAccuracy: CLLocationAccuracy = 5.0) async -> CLLocation? {
+        print("🔵 DEBUG: captureHighPrecisionLocationForPOI started - timeout: \(timeout)s, target accuracy: \(targetAccuracy)m")
+        
+        return await withCheckedContinuation { continuation in
+            let originalDesiredAccuracy = locationManager.desiredAccuracy
+            let originalDistanceFilter = locationManager.distanceFilter
+            let originalActivityType = locationManager.activityType
+            
+            print("🔵 DEBUG: Original settings - accuracy: \(originalDesiredAccuracy), distance filter: \(originalDistanceFilter), activity: \(originalActivityType.rawValue)")
+            
+            var bestLocation: CLLocation?
+            var didResume = false
+            var locationCount = 0
+            
+            func resumeOnce(_ location: CLLocation?) {
+                Task { @MainActor in
+                    guard !didResume else { return }
+                    didResume = true
+                    onTemporarySample = nil
+                    
+                    print("🔵 DEBUG: Resuming with location: \(location != nil ? "found" : "nil"), processed \(locationCount) location updates")
+                    
+                    // Restore original settings
+                    locationManager.desiredAccuracy = originalDesiredAccuracy
+                    locationManager.distanceFilter = originalDistanceFilter
+                    locationManager.activityType = originalActivityType
+                    
+                    print("🔵 DEBUG: Restored original location manager settings")
+                    
+                    continuation.resume(returning: location)
+                }
+            }
+            
+            // Configure for maximum precision
+            onTemporarySample = { location in
+                locationCount += 1
+                print("🔵 DEBUG: Received location sample \(locationCount) - accuracy: \(location.horizontalAccuracy)m, age: \(abs(location.timestamp.timeIntervalSinceNow))s")
+                
+                guard location.horizontalAccuracy > 0 else { 
+                    print("🔵 DEBUG: Ignoring location with invalid accuracy")
+                    return 
+                }
+                
+                // Only consider locations that are fresh (within last 5 seconds)
+                guard abs(location.timestamp.timeIntervalSinceNow) < 5.0 else { 
+                    print("🔵 DEBUG: Ignoring stale location (age: \(abs(location.timestamp.timeIntervalSinceNow))s)")
+                    return 
+                }
+                
+                if bestLocation == nil || location.horizontalAccuracy < (bestLocation?.horizontalAccuracy ?? .greatestFiniteMagnitude) {
+                    bestLocation = location
+                    print("🔵 DEBUG: New best location - accuracy: \(location.horizontalAccuracy)m")
+                }
+                
+                // If we've achieved target accuracy, return immediately
+                if location.horizontalAccuracy <= targetAccuracy {
+                    print("🔵 DEBUG: Target accuracy achieved (\(location.horizontalAccuracy)m <= \(targetAccuracy)m)")
+                    resumeOnce(location)
+                }
+            }
+            
+            // Configure for highest precision
+            print("🔵 DEBUG: Configuring for highest precision")
+            locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+            locationManager.distanceFilter = kCLDistanceFilterNone
+            locationManager.activityType = .other // Better for stationary readings
+            locationManager.startUpdatingLocation()
+            
+            // Timeout after specified duration
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                print("🔵 DEBUG: Timeout reached after \(timeout)s")
+                resumeOnce(bestLocation)
+            }
+        }
+    }
+    
     func createTrailRoute(name: String) -> TrailRoute? {
         guard let startTime = routeStartTime, !currentRoute.isEmpty else {
             return nil
@@ -332,8 +424,10 @@ extension LocationManager: CLLocationManagerDelegate {
         // Allow an initial fix; still ignore invalid readings
         guard location.horizontalAccuracy > 0 else { return }
         
-        // Log altitude info for debugging
-        print("Location update - Lat: \(location.coordinate.latitude), Lng: \(location.coordinate.longitude), Alt: \(location.altitude), VerticalAccuracy: \(location.verticalAccuracy)")
+        // Log location info for debugging (only every 5th update to reduce spam)
+        if recentSamples.count % 5 == 0 {
+            print("📍 DEBUG: Location update #\(recentSamples.count + 1) - Lat: \(location.coordinate.latitude), Lng: \(location.coordinate.longitude), Alt: \(location.altitude), Accuracy: \(location.horizontalAccuracy)m, VerticalAccuracy: \(location.verticalAccuracy)")
+        }
         
         self.location = location
         

@@ -149,6 +149,13 @@ class DataManager: ObservableObject {
         savePOIsToFile()
     }
     
+    func updatePOI(_ updated: PointOfInterest) {
+        if let index = savedPOIs.firstIndex(where: { $0.id == updated.id }) {
+            savedPOIs[index] = updated
+            savePOIsToFile()
+        }
+    }
+    
     func clearAllPOIs() {
         // Clear in-memory array first so UI updates immediately
         savedPOIs.removeAll()
@@ -284,6 +291,31 @@ class DataManager: ObservableObject {
         } catch {
             print("Error exporting custom POIs JSON (data): \(error)")
             return nil
+        }
+    }
+    
+    // MARK: - Modern Export System
+    
+    private let poiExportManager = POIExportManager()
+    
+    func exportPOIs(format: String) -> Result<URL, POIExportError> {
+        print("[POI Export] Starting export with \(savedPOIs.count) POIs in \(format) format")
+        
+        guard let exportFormat = POIExportManager.format(named: format) else {
+            print("[POI Export] Unknown format: \(format)")
+            return .failure(.encodingFailed("Unknown export format: \(format)"))
+        }
+        
+        do {
+            let url = try poiExportManager.exportPOIs(savedPOIs, format: exportFormat)
+            print("[POI Export] Successfully created export file: \(url.lastPathComponent)")
+            return .success(url)
+        } catch let error as POIExportError {
+            print("[POI Export] Export failed: \(error.localizedDescription)")
+            return .failure(error)
+        } catch {
+            print("[POI Export] Unexpected export error: \(error)")
+            return .failure(.encodingFailed(error.localizedDescription))
         }
     }
     

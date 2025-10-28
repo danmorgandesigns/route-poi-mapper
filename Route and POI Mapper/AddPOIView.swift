@@ -18,7 +18,7 @@ struct AddPOIView: View {
     
     @State private var name = ""
     @State private var description = ""
-    @State private var selectedCategory: String = POICategory.scenic.rawValue
+    @State private var selectedCategory: String = ""
     
     @State private var isRefining = false
     @State private var refinedLocation: CLLocation? = nil
@@ -36,6 +36,23 @@ struct AddPOIView: View {
         return injected
     }
     
+    // Visual indicators for location accuracy quality
+    private var accuracyIndicatorIcon: String {
+        let accuracy = bestCandidateLocation.horizontalAccuracy
+        if accuracy <= 0 { return "questionmark.circle" }
+        if accuracy <= 5 { return "checkmark.circle.fill" }
+        if accuracy <= 15 { return "checkmark.circle" }
+        return "exclamationmark.triangle"
+    }
+    
+    private var accuracyIndicatorColor: Color {
+        let accuracy = bestCandidateLocation.horizontalAccuracy
+        if accuracy <= 0 { return .gray }
+        if accuracy <= 5 { return .green }
+        if accuracy <= 15 { return .orange }
+        return .red
+    }
+    
     var body: some View {
         NavigationView {
             Form {
@@ -48,9 +65,9 @@ struct AddPOIView: View {
                         .textInputAutocapitalization(.sentences)
                     
                     Picker("Category", selection: $selectedCategory) {
-                        ForEach(POICategory.allCases, id: \.self) { category in
-                            Label(category.rawValue, systemImage: category.systemImage)
-                                .tag(category.rawValue)
+                        Text("Select Category").tag("")
+                        ForEach(dataManager.customCategories.sorted().map { String(describing: $0) }, id: \.self) { categoryName in
+                            Text(categoryName).tag(categoryName)
                         }
                     }
                 }
@@ -90,8 +107,15 @@ struct AddPOIView: View {
                             Text("Accuracy:")
                                 .fontWeight(.medium)
                             Spacer()
-                            Text(String(format: "%.1f m", bestCandidateLocation.horizontalAccuracy))
-                                .foregroundColor(.secondary)
+                            HStack(spacing: 4) {
+                                Text(String(format: "%.1f m", bestCandidateLocation.horizontalAccuracy))
+                                    .foregroundColor(.secondary)
+                                
+                                // Add accuracy indicator
+                                Image(systemName: accuracyIndicatorIcon)
+                                    .foregroundColor(accuracyIndicatorColor)
+                                    .font(.caption)
+                            }
                         }
                         
                         HStack {
@@ -101,8 +125,12 @@ struct AddPOIView: View {
                                 Text("Refining location…")
                                     .foregroundColor(.secondary)
                             } else {
-                                Button("Refine for 2s") { startRefineWindow() }
-                                    .font(.caption)
+                                Button("Refine Location") { 
+                                    Task {
+                                        await startHighPrecisionRefine()
+                                    }
+                                }
+                                .font(.caption)
                             }
                             Spacer()
                         }
@@ -122,7 +150,7 @@ struct AddPOIView: View {
                     Button("Save") {
                         savePOI()
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedCategory.isEmpty)
                 }
             }
         }
@@ -140,7 +168,8 @@ struct AddPOIView: View {
             description: description.trimmingCharacters(in: .whitespacesAndNewlines),
             coordinate: POICoordinate(from: locToUse),
             timestamp: Date(),
-            category: selectedCategory
+            category: selectedCategory,
+            colorName: "blue"
         )
         
         dataManager.savePOI(poi)
@@ -175,6 +204,25 @@ struct AddPOIView: View {
             }
         }
         attempt()
+    }
+    
+    /// Uses the LocationManager's high-precision capture method for better POI accuracy
+    private func startHighPrecisionRefine() async {
+        guard !isRefining, let locationManager = locationManager else { return }
+        isRefining = true
+        
+        // Use the LocationManager's dedicated high-precision capture method
+        let preciseLocation = await locationManager.captureHighPrecisionLocationForPOI(
+            timeout: 8.0,  // Allow more time for precision
+            targetAccuracy: 3.0  // Target 3-meter accuracy
+        )
+        
+        await MainActor.run {
+            if let preciseLocation = preciseLocation {
+                refinedLocation = preciseLocation
+            }
+            isRefining = false
+        }
     }
 }
 

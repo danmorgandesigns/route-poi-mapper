@@ -24,5 +24,5 @@ struct InfoView: View {
 }
 
 #Preview {
-    SettingsView()
+    InfoView()
 }

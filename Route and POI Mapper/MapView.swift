@@ -289,24 +289,53 @@ struct MapView: View {
                         Button(action: {
                             if !isLocationEnabled {
                                 pendingActionAfterLocationEnable = {
-                                    if let currentLocation = locationManager.location {
-                                        selectedPOILocation = currentLocation
-                                        DispatchQueue.main.async { showingQuickPOIModal = true }
-                                    } else {
-                                        let dummyLocation = CLLocation(latitude: 37.7749, longitude: -122.4194)
-                                        selectedPOILocation = dummyLocation
-                                        DispatchQueue.main.async { showingQuickPOIModal = true }
+                                    Task {
+                                        // Capture high-precision location for POI
+                                        let currentLocation = locationManager.location
+                                        let useCurrentLocation = currentLocation != nil && 
+                                            currentLocation!.horizontalAccuracy > 0 && 
+                                            currentLocation!.horizontalAccuracy <= 10.0 && // 10m or better
+                                            abs(currentLocation!.timestamp.timeIntervalSinceNow) < 30.0 // Less than 30 seconds old
+                                        
+                                        if useCurrentLocation {
+                                            await MainActor.run {
+                                                selectedPOILocation = currentLocation
+                                                showingQuickPOIModal = true
+                                            }
+                                        } else {
+                                            let preciseLocation = await locationManager.captureHighPrecisionLocationForPOI(timeout: 5.0, targetAccuracy: 8.0)
+                                            
+                                            await MainActor.run {
+                                                selectedPOILocation = preciseLocation ?? locationManager.location ?? CLLocation(latitude: 37.7749, longitude: -122.4194)
+                                                showingQuickPOIModal = true
+                                            }
+                                        }
                                     }
                                 }
                                 showingLocationDisabledModal = true
                             } else {
-                                if let currentLocation = locationManager.location {
-                                    selectedPOILocation = currentLocation
-                                    DispatchQueue.main.async { showingQuickPOIModal = true }
-                                } else {
-                                    let dummyLocation = CLLocation(latitude: 37.7749, longitude: -122.4194)
-                                    selectedPOILocation = dummyLocation
-                                    DispatchQueue.main.async { showingQuickPOIModal = true }
+                                Task {
+                                    // Capture high-precision location for POI
+                                    let currentLocation = locationManager.location
+                                    let useCurrentLocation = currentLocation != nil && 
+                                        currentLocation!.horizontalAccuracy > 0 && 
+                                        currentLocation!.horizontalAccuracy <= 10.0 && // 10m or better
+                                        abs(currentLocation!.timestamp.timeIntervalSinceNow) < 30.0 // Less than 30 seconds old
+                                    
+                                    if useCurrentLocation {
+                                        await MainActor.run {
+                                            selectedPOILocation = currentLocation
+                                            showingQuickPOIModal = true
+                                        }
+                                    } else {
+                                        // Reduce timeout for better responsiveness
+                                        let preciseLocation = await locationManager.captureHighPrecisionLocationForPOI(timeout: 5.0, targetAccuracy: 8.0)
+                                        
+                                        await MainActor.run {
+                                            selectedPOILocation = preciseLocation ?? locationManager.location ?? CLLocation(latitude: 37.7749, longitude: -122.4194)
+                                            showingQuickPOIModal = true
+                                        }
+                                    }
                                 }
                             }
                         }) {
@@ -411,7 +440,7 @@ struct MapView: View {
             SavedDataView(dataManager: dataManager)
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
+            SettingsView(dataManager: dataManager)
         }
         .sheet(isPresented: $showingInfo) {
             InfoView()
@@ -445,18 +474,7 @@ struct MapView: View {
     }
 }
 
-struct CapsuleLabel: View {
-    let text: String
-    var body: some View {
-        Text(text)
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .foregroundColor(.primary)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background(.regularMaterial, in: Capsule())
-    }
-}
+
 
 final class RouteMidpointAnnotation: MKPointAnnotation {
     var routeName: String = ""
@@ -465,6 +483,7 @@ final class RouteMidpointAnnotation: MKPointAnnotation {
 // New POIAnnotation class with poiName property
 final class POIAnnotation: MKPointAnnotation {
     var poiName: String = ""
+    var poiColorName: String = "blue"
 }
 
 struct UIKitMapView: UIViewRepresentable {
@@ -479,6 +498,35 @@ struct UIKitMapView: UIViewRepresentable {
     var showsUserLocation: Bool = true
     
     var onUserInteraction: (() -> Void)? = nil
+    
+    private func uiColor(for name: String) -> UIColor {
+        switch name.lowercased() {
+        case "black": return .black
+        case "blue": return .systemBlue
+        case "brown": return .brown
+        case "cyan": return .cyan
+        case "gray", "grey": return .systemGray
+        case "green": return .systemGreen
+        case "indigo": return UIColor { trait in
+            return UIColor.systemIndigo
+        }
+        case "mint": return UIColor { _ in
+            return UIColor.systemMint
+        }
+        case "orange": return .systemOrange
+        case "pink": return UIColor { _ in
+            return UIColor.systemPink
+        }
+        case "purple": return .systemPurple
+        case "red": return .systemRed
+        case "teal": return UIColor { _ in
+            return UIColor.systemTeal
+        }
+        case "white": return .white
+        case "yellow": return .systemYellow
+        default: return .systemBlue
+        }
+    }
     
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -500,24 +548,56 @@ struct UIKitMapView: UIViewRepresentable {
         }
         if uiView.mapType != mapType { uiView.mapType = mapType }
         if uiView.showsUserLocation != showsUserLocation { uiView.showsUserLocation = showsUserLocation }
+        
         // Update overlays
         uiView.removeOverlays(uiView.overlays)
         uiView.addOverlays(polylines)
-        // Update POI annotations
-        uiView.removeAnnotations(uiView.annotations.filter { !($0 is MKUserLocation) })
         
-        // Use POIAnnotation instead of MKPointAnnotation for POIs
-        let annotations = poiAnnotations.map { poi -> POIAnnotation in
-            let ann = POIAnnotation()
-            ann.poiName = poi.name
-            ann.title = poi.name
-            ann.coordinate = poi.coordinate.clLocationCoordinate2D
-            return ann
+        // Update POI annotations - only if they actually changed
+        let currentPOIAnnotations = uiView.annotations.compactMap { $0 as? POIAnnotation }
+        let currentRouteMidpoints = uiView.annotations.compactMap { $0 as? RouteMidpointAnnotation }
+        
+        // Check if POI annotations need updating
+        let needsPOIUpdate = currentPOIAnnotations.count != poiAnnotations.count ||
+            !currentPOIAnnotations.allSatisfy { annotation in
+                poiAnnotations.contains { poi in
+                    poi.name == annotation.poiName &&
+                    abs(poi.coordinate.latitude - annotation.coordinate.latitude) < 0.000001 &&
+                    abs(poi.coordinate.longitude - annotation.coordinate.longitude) < 0.000001 &&
+                    (poi.colorName ?? "blue") == annotation.poiColorName
+                }
+            }
+        
+        if needsPOIUpdate {
+            // Remove only POI annotations, keep user location
+            uiView.removeAnnotations(currentPOIAnnotations)
+            
+            // Create new POI annotations
+            let newPOIAnnotations = poiAnnotations.map { poi -> POIAnnotation in
+                let ann = POIAnnotation()
+                ann.poiName = poi.name
+                ann.poiColorName = poi.colorName ?? "blue"
+                ann.title = poi.name
+                ann.coordinate = poi.coordinate.clLocationCoordinate2D
+                return ann
+            }
+            uiView.addAnnotations(newPOIAnnotations)
         }
-        uiView.addAnnotations(annotations)
         
-        // Add route midpoint annotations
-        uiView.addAnnotations(routeMidpointAnnotations)
+        // Check if route midpoint annotations need updating
+        let needsRouteUpdate = currentRouteMidpoints.count != routeMidpointAnnotations.count ||
+            !currentRouteMidpoints.allSatisfy { annotation in
+                routeMidpointAnnotations.contains { route in
+                    route.routeName == annotation.routeName &&
+                    abs(route.coordinate.latitude - annotation.coordinate.latitude) < 0.000001 &&
+                    abs(route.coordinate.longitude - annotation.coordinate.longitude) < 0.000001
+                }
+            }
+        
+        if needsRouteUpdate {
+            uiView.removeAnnotations(currentRouteMidpoints)
+            uiView.addAnnotations(routeMidpointAnnotations)
+        }
     }
     
     // PaddingLabel helper to provide intrinsic content padding around text
@@ -595,62 +675,62 @@ struct UIKitMapView: UIViewRepresentable {
                     annotationView = MKAnnotationView(annotation: routeMidpoint, reuseIdentifier: id)
                     annotationView?.canShowCallout = false
                     
-                    // Container sized to fit icon + label
+                    // Container sized to fit icon + label with fixed dimensions
                     let iconDiameter: CGFloat = 24
                     let spacing: CGFloat = 2
+                    let maxLabelWidth: CGFloat = 280
+                    let estimatedLabelHeight: CGFloat = 20
                     
-                    // Measure label width somewhat generously; we'll cap later
-                    let nameText = routeMidpoint.routeName
-                    let (label, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                    let containerWidth = max(iconDiameter, maxLabelWidth)
+                    let containerHeight = iconDiameter + spacing + estimatedLabelHeight
                     
-                    let container = UIView(frame: CGRect(x: 0, y: 0, width: max(iconDiameter, labelSize.width), height: iconDiameter + spacing + labelSize.height))
+                    let container = UIView(frame: CGRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
                     container.backgroundColor = .clear
+                    container.tag = 2000 // Route container tag
                     
                     // Brown circular icon
-                    let circleView = UIView(frame: CGRect(x: (container.bounds.width - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
+                    let circleView = UIView(frame: CGRect(x: (containerWidth - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
                     circleView.backgroundColor = UIColor.brown
                     circleView.layer.cornerRadius = iconDiameter / 2
                     circleView.clipsToBounds = true
+                    circleView.tag = 2001
                     
                     let imageView = UIImageView(frame: circleView.bounds)
                     imageView.contentMode = .center
                     let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
                     imageView.image = UIImage(systemName: "figure.hiking", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                    imageView.tag = 2003
                     
                     circleView.addSubview(imageView)
                     container.addSubview(circleView)
                     
-                    label.frame = CGRect(x: (container.bounds.width - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
+                    // Measure label width
+                    let nameText = routeMidpoint.routeName
+                    let (label, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                    
+                    label.frame = CGRect(x: (containerWidth - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
+                    label.tag = 2002
                     container.addSubview(label)
                     
-                    annotationView?.subviews.forEach { $0.removeFromSuperview() }
                     annotationView?.addSubview(container)
                     annotationView?.frame = container.frame
                     annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
                 } else {
                     annotationView?.annotation = routeMidpoint
-                    // Update label text
-                    if let container = annotationView?.subviews.first {
-                        for subview in container.subviews {
-                            if let label = subview as? UILabel {
-                                let nameText = routeMidpoint.routeName
-                                label.text = nameText
-                                
-                                let iconDiameter: CGFloat = 24
-                                let spacing: CGFloat = 2
-                                
-                                let (_, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
-                                
-                                label.frame = CGRect(x: (container.bounds.width - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
-                                
-                                // Also update container and annotationView frame
-                                let containerWidth = max(iconDiameter, labelSize.width)
-                                let containerHeight = iconDiameter + spacing + labelSize.height
-                                
-                                container.frame = CGRect(x: 0, y: 0, width: containerWidth, height: containerHeight)
-                                annotationView?.frame = container.frame
-                                annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
-                            }
+                    
+                    // Update label text efficiently for reused views
+                    if let container = annotationView?.viewWithTag(2000),
+                       let existingLabel = container.viewWithTag(2002) as? UILabel {
+                        let nameText = routeMidpoint.routeName
+                        if existingLabel.text != nameText {
+                            existingLabel.text = nameText
+                            
+                            // Recalculate label size and position
+                            let (_, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                            let iconDiameter: CGFloat = 24
+                            let spacing: CGFloat = 2
+                            
+                            existingLabel.frame = CGRect(x: (container.bounds.width - labelSize.width)/2, y: iconDiameter + spacing, width: labelSize.width, height: labelSize.height)
                         }
                     }
                 }
@@ -668,14 +748,18 @@ struct UIKitMapView: UIViewRepresentable {
                     annotationView = MKAnnotationView(annotation: poiAnnotation, reuseIdentifier: id)
                     annotationView?.canShowCallout = false
                     
-                    // Remove existing subviews if any (defensive)
-                    annotationView?.subviews.forEach { $0.removeFromSuperview() }
+                    // Create a fixed-size container that won't change
+                    let maxLabelWidth: CGFloat = 280
+                    let estimatedLabelHeight: CGFloat = 20 // Conservative estimate for capsule label
+                    let containerWidth = max(iconDiameter, maxLabelWidth)
+                    let containerHeight = iconDiameter + spacing + estimatedLabelHeight
                     
-                    let container = UIView(frame: CGRect(x: 0, y: 0, width: iconDiameter, height: iconDiameter))
+                    let container = UIView(frame: CGRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
                     container.backgroundColor = .clear
+                    container.tag = 1000 // Main container tag
                     
-                    let circleView = UIView(frame: CGRect(x: (container.bounds.width - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
-                    circleView.backgroundColor = UIColor.systemRed
+                    let circleView = UIView(frame: CGRect(x: (containerWidth - iconDiameter)/2, y: 0, width: iconDiameter, height: iconDiameter))
+                    circleView.backgroundColor = parent.uiColor(for: poiAnnotation.poiColorName)
                     circleView.layer.cornerRadius = iconDiameter / 2
                     circleView.clipsToBounds = true
                     circleView.tag = 1001
@@ -684,25 +768,18 @@ struct UIKitMapView: UIViewRepresentable {
                     imageView.contentMode = .center
                     let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
                     imageView.image = UIImage(systemName: "mappin.and.ellipse", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                    imageView.tag = 1003
                     
                     circleView.addSubview(imageView)
                     container.addSubview(circleView)
                     
-                    // Create hosting controller for CapsuleLabel
-                    let hosting = UIHostingController(rootView: CapsuleLabel(text: nameText))
-                    hosting.view.backgroundColor = .clear
-                    let labelSize = hosting.sizeThatFits(in: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
-                    let labelWidth = min(280, labelSize.width)
-                    let labelHeight = labelSize.height
-                    let labelX = (container.bounds.width - labelWidth)/2
+                    // Create UIKit capsule label matching SwiftUI design
+                    let (label, labelSize, _) = parent.makeCapsuleLabel(text: nameText)
+                    let labelX = (containerWidth - labelSize.width)/2
                     let labelY = iconDiameter + spacing
-                    hosting.view.frame = CGRect(x: labelX, y: labelY, width: labelWidth, height: labelHeight)
-                    hosting.view.tag = 1002
-                    container.addSubview(hosting.view)
-                    
-                    let newWidth = max(iconDiameter, labelWidth)
-                    let newHeight = iconDiameter + spacing + labelHeight
-                    container.frame = CGRect(x: 0, y: 0, width: newWidth, height: newHeight)
+                    label.frame = CGRect(x: labelX, y: labelY, width: labelSize.width, height: labelSize.height)
+                    label.tag = 1002
+                    container.addSubview(label)
                     
                     annotationView?.addSubview(container)
                     annotationView?.frame = container.frame
@@ -710,35 +787,31 @@ struct UIKitMapView: UIViewRepresentable {
                 } else {
                     annotationView?.annotation = poiAnnotation
                     
-                    if let container = annotationView?.subviews.first {
-                        // Remove previous label view if present
-                        if let oldLabelView = container.viewWithTag(1002) {
-                            oldLabelView.removeFromSuperview()
+                    // Find the existing container and update only what's necessary
+                    if let container = annotationView?.viewWithTag(1000) {
+                        // Update circle color if needed
+                        if let circleView = container.viewWithTag(1001) {
+                            let newColor = parent.uiColor(for: poiAnnotation.poiColorName)
+                            if circleView.backgroundColor != newColor {
+                                circleView.backgroundColor = newColor
+                            }
                         }
-                        // Create a fresh hosting controller for the updated text
-                        let hosting = UIHostingController(rootView: CapsuleLabel(text: nameText))
-                        hosting.view.backgroundColor = .clear
-                        let size = hosting.sizeThatFits(in: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
-                        let w = min(280, size.width)
-                        let h = size.height
-                        let x = (container.bounds.width - w)/2
-                        let y = iconDiameter + spacing
-                        hosting.view.frame = CGRect(x: x, y: y, width: w, height: h)
-                        hosting.view.tag = 1002
-                        container.addSubview(hosting.view)
-                        // Update container
-                        let cw = max(iconDiameter, w)
-                        let ch = iconDiameter + spacing + h
-                        container.frame = CGRect(x: 0, y: 0, width: cw, height: ch)
-                        annotationView?.frame = container.frame
-                        annotationView?.centerOffset = CGPoint(x: 0, y: -(container.frame.height / 2))
                         
-                        // Update circle view only
-                        if let circle = container.viewWithTag(1001) {
-                            circle.backgroundColor = UIColor.systemRed
-                            if let imageView = circle.subviews.first as? UIImageView {
-                                let config = UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)
-                                imageView.image = UIImage(systemName: "mappin.and.ellipse", withConfiguration: config)?.withTintColor(.white, renderingMode: .alwaysOriginal)
+                        // Update label text efficiently
+                        if let oldLabel = container.viewWithTag(1002) as? PaddingLabel {
+                            let currentText = nameText
+                            
+                            // Check if we need to update the text
+                            if oldLabel.text != currentText {
+                                // Remove old label and create new one
+                                oldLabel.removeFromSuperview()
+                                
+                                let (label, labelSize, _) = parent.makeCapsuleLabel(text: currentText)
+                                let labelX = (container.bounds.width - labelSize.width)/2
+                                let labelY: CGFloat = 24 + 2 // iconDiameter + spacing
+                                label.frame = CGRect(x: labelX, y: labelY, width: labelSize.width, height: labelSize.height)
+                                label.tag = 1002
+                                container.addSubview(label)
                             }
                         }
                     }
@@ -953,7 +1026,6 @@ struct QuickPOIModal: View {
     
     @State private var poiName: String = ""
     @State private var selectedCategory = ""
-    @State private var showingCategoryCustomization = false
     
     private var effectiveLocation: CLLocation? {
         location ?? locationManager.location
@@ -1014,16 +1086,6 @@ struct QuickPOIModal: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-                    
-                    HStack {
-                        Button("Customize categories") {
-                            showingCategoryCustomization = true
-                        }
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                        
-                        Spacer()
-                    }
                 }
             }
             .navigationTitle("Add Quick POI")
@@ -1043,19 +1105,18 @@ struct QuickPOIModal: View {
                 }
             }
         }
-        .sheet(isPresented: $showingCategoryCustomization) {
-            CategoryCustomizationView(dataManager: dataManager)
-        }
     }
     
     private func savePOI() {
         guard let loc = effectiveLocation else { return }
+        
         let poi = PointOfInterest(
             name: poiName.trimmingCharacters(in: .whitespacesAndNewlines),
             description: "",
             coordinate: POICoordinate(from: loc),
             timestamp: Date(),
-            category: selectedCategory
+            category: selectedCategory,
+            colorName: "blue"
         )
         
         dataManager.savePOI(poi)
